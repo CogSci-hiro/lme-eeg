@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from lmeeeg.backends.correction.base import BaseCorrectionBackend
@@ -24,6 +26,11 @@ class MNETFCorrectionBackend(BaseCorrectionBackend):
         adjacency,
     ) -> InferenceResult:
         """Run TFCE permutation correction with MNE."""
+        # Some environments expose MNE through a Numba caching path that is not
+        # available at runtime. Disabling JIT here keeps the optional backend
+        # usable without affecting the public API.
+        os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+        os.environ.setdefault("MNE_DONTWRITE_HOME", "true")
         try:
             from mne.stats import permutation_cluster_1samp_test
         except Exception as error:  # pragma: no cover
