@@ -19,6 +19,11 @@ dependencies = [
 
 [project.optional-dependencies]
 mne = ["mne>=1.5"]
+docs = [
+    "sphinx>=7.2",
+    "pydata-sphinx-theme>=0.15",
+    "sphinx-design>=0.6",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.0",

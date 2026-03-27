@@ -55,18 +55,6 @@ class ERPComponentSpec:
         Center of the smooth channel topography in normalized channel coordinates.
     topography_width : float
         Width of the smooth channel topography in normalized channel coordinates.
-
-    Usage example
-    -------------
-    >>> ERPComponentSpec(
-    ...     name="P100",
-    ...     peak_latency_ms=100.0,
-    ...     width_ms=25.0,
-    ...     polarity=1.0,
-    ...     amplitude_intercept=1.4,
-    ...     amplitude_condition_effect=0.0,
-    ...     topography_center=0.8,
-    ... )
     """
 
     name: str
@@ -172,10 +160,6 @@ def simulate_random_intercept_dataset(
     -------
     SimulatedDataset
         Simulated dataset.
-
-    Usage example
-    -------------
-        simulated = simulate_random_intercept_dataset(seed=13)
     """
     rng = np.random.default_rng(seed)
     n_observations = n_subjects * n_trials_per_subject
@@ -277,36 +261,9 @@ def simulate_erp_random_intercept_dataset(
 
     Notes
     -----
-    The returned ``metadata`` DataFrame contains one row per observation with columns:
-
-    +-------------------+-----------+--------------------------------------+
-    | column            | dtype     | meaning                              |
-    +===================+===========+======================================+
-    | subject           | object    | subject label such as ``sub-003``    |
-    +-------------------+-----------+--------------------------------------+
-    | condition         | object    | categorical condition ``A`` or ``B`` |
-    +-------------------+-----------+--------------------------------------+
-    | latency           | float     | numeric trial covariate              |
-    +-------------------+-----------+--------------------------------------+
-    | trial_index       | int       | within-subject trial index           |
-    +-------------------+-----------+--------------------------------------+
-    | observation_index | int       | global trial index                   |
-    +-------------------+-----------+--------------------------------------+
-
-    Usage example
-    -------------
-        simulation = simulate_erp_random_intercept_dataset(
-            n_subjects=20,
-            n_trials_per_subject=40,
-            n_channels=32,
-            sampling_rate_hz=250.0,
-            tmin_s=-0.2,
-            tmax_s=0.6,
-            include_channel_covariance=True,
-            noise_sd=1.0,
-            ar1_rho=0.6,
-            seed=7,
-        )
+    The returned ``metadata`` DataFrame contains one row per observation and
+    includes the columns ``subject``, ``condition``, ``latency``,
+    ``trial_index``, and ``observation_index``.
     """
     from lmeeeg.simulation.scenarios import build_default_erp_component_specs
 

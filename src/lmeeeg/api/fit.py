@@ -65,19 +65,6 @@ def fit_lmm_mass_univariate(
     FitResult
         Result object containing design information, convergence diagnostics,
         marginal EEG, and OLS summary statistics.
-
-    Usage example
-    -------------
-        fit_result = fit_lmm_mass_univariate(
-            eeg=eeg,
-            metadata=metadata,
-            formula="y ~ condition + latency + (1|subject)",
-            variable_types={
-                "condition": "categorical",
-                "latency": "numeric",
-                "subject": "group",
-            },
-        )
     """
     config = config or FitConfig()
     design_spec = build_design_spec(

@@ -57,16 +57,6 @@ def permute_fixed_effect(
     -------
     InferenceResult
         Corrected inference output.
-
-    Usage example
-    -------------
-        inference = permute_fixed_effect(
-            fit_result=fit_result,
-            effect="condition[T.B]",
-            correction="tfce",
-            n_permutations=500,
-            seed=1,
-        )
     """
     if effect not in fit_result.design_spec.fixed_column_names:
         available = ", ".join(fit_result.design_spec.fixed_column_names)
