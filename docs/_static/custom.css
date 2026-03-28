@@ -1,0 +1,56 @@
+:root {
+  --lmeeeg-accent: #005f73;
+  --lmeeeg-accent-soft: #e0f0f3;
+  --lmeeeg-warm: #bb3e03;
+}
+
+.bd-main .bd-content .bd-article-container {
+  max-width: 64rem;
+}
+
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+}
+
+.homepage-logo {
+  display: block;
+  margin: 0 auto 1.5rem;
+  max-width: 24rem;
+  width: min(72vw, 24rem);
+}
+
+.landing-card,
+.api-card {
+  border-radius: 1rem;
+}
+
+.landing-card {
+  border-top: 4px solid var(--lmeeeg-accent);
+}
+
+.landing-card .sd-card-title {
+  color: var(--lmeeeg-accent);
+  font-weight: 700;
+}
+
+.api-card {
+  background: linear-gradient(180deg, #ffffff 0%, var(--lmeeeg-accent-soft) 100%);
+}
+
+.bd-header {
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.08);
+}
+
+.navbar-brand {
+  font-weight: 700;
+}
+
+.navbar-brand img {
+  height: 2.25rem;
+  max-height: 2.25rem;
+  width: auto;
+}
+
+.navbar-brand .title {
+  margin-left: 0.5rem;
+}
