@@ -19,5 +19,6 @@ class BaseCorrectionBackend(ABC):
         tail: int,
         threshold: float | dict[str, float] | None,
         adjacency: Any,
+        verbose: bool | str | int | None = "info",
     ) -> InferenceResult:
         """Run correction backend."""

@@ -15,6 +15,7 @@ class PermutationConfig:
     n_permutations: int = 1000
     seed: int = 0
     tail: int = 0
+    verbose: bool | str | int | None = "info"
 
 
 # ==============================
@@ -30,6 +31,7 @@ def permute_fixed_effect(
     tail: int = 0,
     threshold: float | dict[str, float] | None = None,
     adjacency=None,
+    verbose: bool | str | int | None = "info",
 ) -> InferenceResult:
     """Run permutation-based inference for one fixed effect.
 
@@ -52,6 +54,10 @@ def permute_fixed_effect(
         Cluster threshold or TFCE threshold dictionary.
     adjacency : Any
         Optional adjacency matrix passed through to MNE correction backends.
+    verbose : bool | str | int | None
+        Verbosity forwarded to MNE-based correction backends. Defaults to
+        ``"info"`` so cluster and TFCE inference report progress. Ignored by
+        the max-stat backend.
 
     Returns
     -------
@@ -79,4 +85,5 @@ def permute_fixed_effect(
         tail=tail,
         threshold=threshold,
         adjacency=adjacency,
+        verbose=verbose,
     )

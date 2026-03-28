@@ -22,6 +22,7 @@ class MaxStatCorrectionBackend(BaseCorrectionBackend):
         tail: int,
         threshold: float | dict[str, float] | None,
         adjacency,
+        verbose: bool | str | int | None = "info",
     ) -> InferenceResult:
         """Run max-statistic correction.
 
@@ -31,7 +32,7 @@ class MaxStatCorrectionBackend(BaseCorrectionBackend):
         permutation scheme on marginalized data. It is intentionally explicit
         and easy to inspect.
         """
-        del threshold, adjacency, tail
+        del threshold, adjacency, tail, verbose
         rng = np.random.default_rng(seed)
         observed_t = fit_result.ols_t_values[effect]
         x_matrix = fit_result.design_spec.fixed_design_matrix
