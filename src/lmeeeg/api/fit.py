@@ -23,10 +23,24 @@ class FitConfig:
         Name of the LMM backend.
     ols_backend_name : str
         Name of the OLS backend.
+    show_progress : bool
+        Whether to show a progress bar while fitting the per-feature mixed models.
+    store_fitted_random_effects : bool
+        Whether to keep the full observation × channel × time random-effects array
+        in memory and in the returned result.
+    store_marginal_eeg : bool
+        Whether to keep the marginalized EEG cube in memory and in the returned result.
+    output_dtype : np.dtype | None
+        Output dtype for large returned EEG-like arrays. Defaults to the dtype of `eeg`
+        when it is already floating-point.
     """
 
     lmm_backend_name: str = "statsmodels"
     ols_backend_name: str = "numpy"
+    show_progress: bool = True
+    store_fitted_random_effects: bool = False
+    store_marginal_eeg: bool = True
+    output_dtype: np.dtype | None = None
 
 
 # ==============================
@@ -67,6 +81,10 @@ def fit_lmm_mass_univariate(
         marginal EEG, and OLS summary statistics.
     """
     config = config or FitConfig()
+    if not config.store_fitted_random_effects and not config.store_marginal_eeg:
+        raise ValueError(
+            "At least one of `store_fitted_random_effects` or `store_marginal_eeg` must be True."
+        )
     design_spec = build_design_spec(
         metadata=metadata,
         formula=formula,
@@ -84,9 +102,18 @@ def fit_lmm_mass_univariate(
         eeg=eeg,
         metadata=metadata,
         design_spec=design_spec,
+        show_progress=config.show_progress,
+        store_fitted_random_effects=config.store_fitted_random_effects,
+        store_marginal_eeg=config.store_marginal_eeg,
+        output_dtype=config.output_dtype,
     )
 
-    marginal_eeg = compute_marginal_eeg(eeg=eeg, fitted_random_effects=lmm_result.fitted_random_effects)
+    if lmm_result.marginal_eeg is not None:
+        marginal_eeg = lmm_result.marginal_eeg
+    elif lmm_result.fitted_random_effects is not None:
+        marginal_eeg = compute_marginal_eeg(eeg=eeg, fitted_random_effects=lmm_result.fitted_random_effects)
+    else:  # pragma: no cover - guarded by config validation above
+        raise RuntimeError("LMM backend returned neither marginalized EEG nor fitted random effects.")
 
     ols_backend = NumPyOLSBackend()
     ols_result = ols_backend.fit_mass_univariate(
@@ -107,12 +134,15 @@ def fit_lmm_mass_univariate(
         fitted_random_effects=lmm_result.fitted_random_effects,
         feature_diagnostics=lmm_result.feature_diagnostics,
         convergence_summary=convergence_summary,
-        marginal_eeg=marginal_eeg,
+        marginal_eeg=lmm_result.marginal_eeg,
         ols_betas=ols_result.beta_maps,
         ols_t_values=ols_result.t_value_maps,
         ols_residual_variance=ols_result.residual_variance_map,
         backend_metadata={
             "lmm_backend": config.lmm_backend_name,
             "ols_backend": config.ols_backend_name,
+            "store_fitted_random_effects": config.store_fitted_random_effects,
+            "store_marginal_eeg": config.store_marginal_eeg,
+            "output_dtype": None if config.output_dtype is None else str(np.dtype(config.output_dtype)),
         },
     )

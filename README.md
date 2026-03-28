@@ -55,6 +55,11 @@ fit_result = fit_lmm_mass_univariate(
     },
 )
 
+# A rich progress bar is shown during the per-feature mixed-model fits by default.
+# Disable it for quiet runs with:
+# from lmeeeg.api.fit import FitConfig
+# fit_result = fit_lmm_mass_univariate(..., config=FitConfig(show_progress=False))
+
 inference = permute_fixed_effect(
     fit_result=fit_result,
     effect="condition[T.B]",

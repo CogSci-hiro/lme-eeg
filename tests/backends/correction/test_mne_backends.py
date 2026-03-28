@@ -1,4 +1,5 @@
 import pytest
+from scipy import sparse
 
 from lmeeeg.api.fit import fit_lmm_mass_univariate
 from lmeeeg.backends.correction.mne_cluster_backend import MNEClusterCorrectionBackend
@@ -41,3 +42,51 @@ def test_mne_backends_smoke() -> None:
     )
     assert cluster_result.corrected_p_values.shape == (2, 3)
     assert tfce_result.corrected_p_values.shape == (2, 3)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.parametrize(
+    ("backend_cls", "threshold", "adjacency"),
+    [
+        (
+            MNEClusterCorrectionBackend,
+            1.5,
+            sparse.csr_matrix([[0, 1], [1, 0]]),
+        ),
+        (
+            MNETFCorrectionBackend,
+            {"start": 0.0, "step": 0.2},
+            sparse.eye(6, format="csr"),
+        ),
+    ],
+)
+def test_mne_backends_accept_sparse_adjacency(backend_cls, threshold, adjacency) -> None:
+    simulated = simulate_random_intercept_dataset(
+        n_subjects=4,
+        n_trials_per_subject=4,
+        n_channels=2,
+        n_times=3,
+        seed=7,
+    )
+    fit_result = fit_lmm_mass_univariate(
+        eeg=simulated.eeg,
+        metadata=simulated.metadata,
+        formula="y ~ condition + latency + (1|subject)",
+        variable_types={
+            "condition": "categorical",
+            "latency": "numeric",
+            "subject": "group",
+        },
+    )
+
+    result = backend_cls().run(
+        fit_result=fit_result,
+        effect="condition[T.B]",
+        n_permutations=10,
+        seed=7,
+        tail=0,
+        threshold=threshold,
+        adjacency=adjacency,
+    )
+
+    assert result.corrected_p_values.shape == (2, 3)

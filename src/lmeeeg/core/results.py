@@ -46,10 +46,10 @@ class FitResult:
     fixed_effects_maps: dict[str, np.ndarray]
     random_effect_variance_map: np.ndarray
     residual_variance_map: np.ndarray
-    fitted_random_effects: np.ndarray
+    fitted_random_effects: np.ndarray | None
     feature_diagnostics: pd.DataFrame
     convergence_summary: ConvergenceSummary
-    marginal_eeg: np.ndarray
+    marginal_eeg: np.ndarray | None
     ols_betas: dict[str, np.ndarray]
     ols_t_values: dict[str, np.ndarray]
     ols_residual_variance: np.ndarray

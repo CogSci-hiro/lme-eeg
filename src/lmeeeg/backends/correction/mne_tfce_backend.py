@@ -41,6 +41,11 @@ class MNETFCorrectionBackend(BaseCorrectionBackend):
         effect_index = column_names.index(effect)
         reduced_columns = [index for index in range(len(column_names)) if index != effect_index]
 
+        if fit_result.marginal_eeg is None:
+            raise ValueError(
+                "Permutation inference requires `fit_result.marginal_eeg`. "
+                "Run `fit_lmm_mass_univariate(..., config=FitConfig(store_marginal_eeg=True))`."
+            )
         y = fit_result.marginal_eeg
         n_observations, n_channels, n_times = y.shape
         y_2d = y.reshape(n_observations, n_channels * n_times)

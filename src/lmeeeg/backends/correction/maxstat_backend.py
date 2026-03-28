@@ -35,6 +35,11 @@ class MaxStatCorrectionBackend(BaseCorrectionBackend):
         rng = np.random.default_rng(seed)
         observed_t = fit_result.ols_t_values[effect]
         x_matrix = fit_result.design_spec.fixed_design_matrix
+        if fit_result.marginal_eeg is None:
+            raise ValueError(
+                "Permutation inference requires `fit_result.marginal_eeg`. "
+                "Run `fit_lmm_mass_univariate(..., config=FitConfig(store_marginal_eeg=True))`."
+            )
         y = fit_result.marginal_eeg
         n_observations, n_channels, n_times = y.shape
         y_2d = y.reshape(n_observations, n_channels * n_times)
