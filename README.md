@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="assets/logo.svg" width="200">
+</p>
 # LmeEEG
 
 Minimal Python package implementing the core lmeEEG workflow for epoched M/EEG data with **random intercepts**:
