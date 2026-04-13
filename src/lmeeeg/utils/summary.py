@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 
 def format_convergence_rate(n_converged: int, n_features: int) -> str:

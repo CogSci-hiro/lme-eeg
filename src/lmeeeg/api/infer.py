@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 from lmeeeg.backends.correction.maxstat_backend import MaxStatCorrectionBackend
