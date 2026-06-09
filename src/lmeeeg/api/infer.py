@@ -1,9 +1,11 @@
 from dataclasses import dataclass
+from typing import Any
 
 from lmeeeg.backends.correction.maxstat_backend import MaxStatCorrectionBackend
 from lmeeeg.backends.correction.mne_cluster_backend import MNEClusterCorrectionBackend
 from lmeeeg.backends.correction.mne_tfce_backend import MNETFCorrectionBackend
 from lmeeeg.core.results import FitResult, InferenceResult
+from lmeeeg.core.space import SpaceKind
 
 
 @dataclass(slots=True)
@@ -14,6 +16,11 @@ class PermutationConfig:
     seed: int = 0
     tail: int = 0
     verbose: bool | str | int | None = "info"
+    space: SpaceKind | None = None
+    adjacency: Any | None = None
+    spatial_chunk_size: int | None = None
+    time_chunk_size: int | None = None
+    store_null_maps: bool = False
 
 
 # ==============================
@@ -30,6 +37,9 @@ def permute_fixed_effect(
     threshold: float | dict[str, float] | None = None,
     adjacency=None,
     verbose: bool | str | int | None = "info",
+    spatial_chunk_size: int | None = None,
+    time_chunk_size: int | None = None,
+    store_null_maps: bool = False,
 ) -> InferenceResult:
     """Run permutation-based inference for one fixed effect.
 
@@ -56,6 +66,14 @@ def permute_fixed_effect(
         Verbosity forwarded to MNE-based correction backends. Defaults to
         ``"info"`` so cluster and TFCE inference report progress. Ignored by
         the max-stat backend.
+    spatial_chunk_size : int | None
+        Optional chunk size over locations for backends that support streaming.
+    time_chunk_size : int | None
+        Optional chunk size over time for backends that support streaming.
+    store_null_maps : bool
+        Reserved for backends that can expose full null maps. Defaults to
+        ``False``; current correction backends store compact max-statistic null
+        distributions only.
 
     Returns
     -------
@@ -84,4 +102,7 @@ def permute_fixed_effect(
         threshold=threshold,
         adjacency=adjacency,
         verbose=verbose,
+        spatial_chunk_size=spatial_chunk_size,
+        time_chunk_size=time_chunk_size,
+        store_null_maps=store_null_maps,
     )

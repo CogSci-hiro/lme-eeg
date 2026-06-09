@@ -112,6 +112,84 @@ def test_fit_lmm_mass_univariate_passes_progress_config(monkeypatch) -> None:
     assert captured["output_dtype"] is None
 
 
+def test_fit_lmm_mass_univariate_source_space_metadata_and_dtype(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyLMMBackend:
+        def fit_mass_univariate(
+            self,
+            eeg,
+            metadata,
+            design_spec,
+            show_progress=True,
+            store_fitted_random_effects=False,
+            store_marginal_eeg=True,
+            output_dtype=None,
+        ):
+            captured["output_dtype"] = output_dtype
+            return type(
+                "DummyLMMResult",
+                (),
+                {
+                    "fixed_effects_maps": {
+                        column_name: np.zeros(eeg.shape[1:], dtype=float)
+                        for column_name in design_spec.fixed_column_names
+                    },
+                    "fitted_random_effects": None,
+                    "marginal_eeg": np.zeros(eeg.shape, dtype=output_dtype or np.float64),
+                    "random_effect_variance_map": np.zeros(eeg.shape[1:], dtype=float),
+                    "residual_variance_map": np.zeros(eeg.shape[1:], dtype=float),
+                    "feature_diagnostics": pd.DataFrame(
+                        [
+                            {
+                                "location": 0,
+                                "channel": 0,
+                                "time": 0,
+                                "converged": True,
+                                "boundary_warning": False,
+                                "message": "",
+                            }
+                        ]
+                    ),
+                },
+            )()
+
+    monkeypatch.setattr("lmeeeg.api.fit.StatsModelsLMMBackend", DummyLMMBackend)
+
+    simulated = simulate_random_intercept_dataset(
+        n_subjects=2,
+        n_trials_per_subject=3,
+        n_channels=3,
+        n_times=2,
+        seed=22,
+    )
+    fit_result = fit_lmm_mass_univariate(
+        eeg=simulated.eeg.astype("float32"),
+        metadata=simulated.metadata,
+        formula="y ~ condition + latency + (1|subject)",
+        variable_types={
+            "condition": "categorical",
+            "latency": "numeric",
+            "subject": "group",
+        },
+        config=FitConfig(
+            show_progress=False,
+            space="source",
+            source_names=["src-0", "src-1", "src-2"],
+            dtype="float32",
+            spatial_chunk_size=2,
+        ),
+    )
+
+    assert captured["output_dtype"] == np.dtype("float32")
+    assert fit_result.space == "source"
+    assert fit_result.location_names == ["src-0", "src-1", "src-2"]
+    assert fit_result.n_locations == 3
+    assert fit_result.n_sources == 3
+    assert fit_result.n_channels == 3
+    assert fit_result.backend_metadata["spatial_chunk_size"] == 2
+
+
 def test_fit_lmm_mass_univariate_can_store_random_effects_when_requested() -> None:
     simulated = simulate_random_intercept_dataset(
         n_subjects=2,

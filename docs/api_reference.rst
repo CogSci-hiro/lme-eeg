@@ -8,7 +8,7 @@ This page is meant to be a practical reference rather than only a symbol index. 
 Workflow overview
 -----------------
 
-1. Generate or load trial-wise EEG shaped ``(n_observations, n_channels, n_times)``.
+1. Generate or load trial-wise data shaped ``(n_observations, n_channels, n_times)`` for sensors or ``(n_observations, n_sources, n_times)`` for source space.
 2. Fit the random-intercept workflow with :func:`lmeeeg.fit_lmm_mass_univariate`.
 3. Run corrected inference with :func:`lmeeeg.permute_fixed_effect`.
 
@@ -119,15 +119,40 @@ Typical metadata pattern:
        }
    )
 
-The matching EEG array for this metadata must have shape ``(4, n_channels, n_times)`` because there is one metadata row per observation.
+The matching EEG or source-space array for this metadata must have shape ``(4, n_channels, n_times)`` or ``(4, n_sources, n_times)`` because there is one metadata row per observation.
 
 Common use cases
 ^^^^^^^^^^^^^^^^
 
 - Use ``formula="y ~ condition + latency + (1|subject)"`` when you want a categorical condition effect with one numeric covariate and one random intercept factor.
 - Set ``fit_intercept=False`` when you want the fixed-effects design matrix without an intercept term.
-- Pass a :class:`lmeeeg.api.fit.FitConfig` only when selecting explicit backend names. The default config is usually sufficient.
+- Pass a :class:`lmeeeg.api.fit.FitConfig` when selecting explicit backend names, recording source-space metadata with ``space="source"``, choosing a signal-array dtype policy, or enabling chunked OLS with ``spatial_chunk_size`` / ``time_chunk_size``.
 - The per-feature mixed-model fit shows a progress bar by default. Use ``FitConfig(show_progress=False)`` when you want a quiet run.
+
+Source-space data
+^^^^^^^^^^^^^^^^^
+
+Source-space analysis uses the same model and expects data shaped ``(n_observations, n_sources, n_times)``. The core package does not require MNE objects.
+
+.. code-block:: python
+
+   fit_result = fit_lmm_mass_univariate(
+       eeg=source_data.astype("float32", copy=False),
+       metadata=metadata,
+       formula="y ~ condition + latency + (1|subject)",
+       variable_types={
+           "condition": "categorical",
+           "latency": "numeric",
+           "subject": "group",
+       },
+       config=FitConfig(
+           space="source",
+           source_names=source_names,
+           dtype="float32",
+           spatial_chunk_size=512,
+           time_chunk_size=50,
+       ),
+   )
 
 Example without a fixed intercept:
 
@@ -213,6 +238,18 @@ TFCE correction with MNE-Python installed:
        threshold={"start": 0.0, "step": 0.2},
    )
 
+How cluster and TFCE inference work
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+- Both MNE-backed inference modes operate on ``fit_result.marginal_eeg`` and first residualize the selected fixed effect and the EEG against the reduced model that excludes that effect.
+- The package then computes a partial-regression t map across the full location-time grid.
+- Max-stat inference stores only one maximum statistic per permutation and can process location/time chunks.
+- TFCE inference stores only one maximum TFCE statistic per permutation, but MNE still processes complete statistic maps internally.
+- Permutations shuffle observations only within the grouping-factor exchangeability blocks, not across all rows globally.
+- Cluster correction uses the observed partial-regression t map, forms clusters at the chosen threshold, and compares each observed cluster statistic to a null distribution of the maximum absolute cluster statistic from each permutation.
+- TFCE correction applies the TFCE transform to the partial-regression t map and compares each observed TFCE score to a null distribution of the maximum absolute TFCE score from each permutation.
+- In both cases, the reported p-values are already multiple-comparison corrected because they are based on permutation maxima.
+
 Common use cases
 ^^^^^^^^^^^^^^^^
 
@@ -220,6 +257,8 @@ Common use cases
 - Choose ``correction="cluster"`` when you want cluster-based correction through MNE-Python.
 - Choose ``correction="tfce"`` when you want threshold-free cluster enhancement through MNE-Python.
 - Use ``tail=0`` for two-sided testing, ``tail=1`` for positive effects, and ``tail=-1`` for negative effects when using MNE-compatible backends.
+- Use ``threshold=2.0`` as a simple cluster-forming threshold for cluster correction unless you have a stronger domain-specific choice.
+- Use ``threshold={"start": 0.0, "step": 0.2}`` for TFCE unless you intentionally want to tune the TFCE integration grid.
 
 Simulation API
 --------------

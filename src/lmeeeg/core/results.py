@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from lmeeeg.core.design import DesignSpec
+from lmeeeg.core.space import SpaceInfo
 
 
 @dataclass(slots=True)
@@ -52,6 +53,30 @@ class FitResult:
     ols_t_values: dict[str, np.ndarray]
     ols_residual_variance: np.ndarray
     backend_metadata: dict[str, Any]
+    space_info: SpaceInfo = SpaceInfo()
+    n_observations: int = 0
+    n_locations: int = 0
+    n_times: int = 0
+
+    @property
+    def space(self) -> str:
+        """Spatial-axis kind: ``sensor``, ``source``, or ``generic``."""
+        return self.space_info.kind
+
+    @property
+    def location_names(self):
+        """Optional names for channels, sources, parcels, or generic locations."""
+        return self.space_info.names
+
+    @property
+    def n_channels(self) -> int:
+        """Backward-compatible alias for the second data axis."""
+        return self.n_locations
+
+    @property
+    def n_sources(self) -> int:
+        """Source-space alias for the second data axis."""
+        return self.n_locations
 
 
 @dataclass(slots=True)

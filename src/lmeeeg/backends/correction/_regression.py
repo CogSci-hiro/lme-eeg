@@ -32,9 +32,9 @@ def prepare_effect_regression(
     effect_index = column_names.index(effect)
     x_matrix = fit_result.design_spec.fixed_design_matrix
     n_observations = x_matrix.shape[0]
-    n_channels = fit_result.marginal_eeg.shape[1]
+    n_locations = fit_result.marginal_eeg.shape[1]
     n_times = fit_result.marginal_eeg.shape[2]
-    y_2d = fit_result.marginal_eeg.reshape(n_observations, n_channels * n_times)
+    y_2d = fit_result.marginal_eeg.reshape(n_observations, n_locations * n_times)
 
     reduced_columns = [index for index in range(len(column_names)) if index != effect_index]
     effect_column = x_matrix[:, effect_index]
@@ -77,7 +77,8 @@ def prepare_effect_regression(
         "effect_sum_squares": effect_ss,
         "degrees_of_freedom": degrees_of_freedom,
         "group_codes": group_codes,
-        "n_channels": n_channels,
+        "n_locations": n_locations,
+        "n_channels": n_locations,
         "n_times": n_times,
     }
 

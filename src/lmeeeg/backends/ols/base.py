@@ -22,5 +22,7 @@ class BaseOLSBackend(ABC):
         eeg: np.ndarray,
         design_matrix: np.ndarray,
         column_names: list[str],
+        spatial_chunk_size: int | None = None,
+        time_chunk_size: int | None = None,
     ) -> OLSBackendResult:
         """Fit OLS mass-univariate models."""

@@ -38,7 +38,7 @@ class StatsModelsLMMBackend(BaseLMMBackend):
         Parameters
         ----------
         eeg : np.ndarray
-            EEG data with shape `(n_observations, n_channels, n_times)`.
+            EEG/source data with shape `(n_observations, n_locations, n_times)`.
         metadata : pd.DataFrame
             Observation-level metadata.
         design_spec : DesignSpec
@@ -49,20 +49,20 @@ class StatsModelsLMMBackend(BaseLMMBackend):
         LMMBackendResult
             Backend result object.
         """
-        n_observations, n_channels, n_times = eeg.shape
-        n_features = n_channels * n_times
+        n_observations, n_locations, n_times = eeg.shape
+        n_features = n_locations * n_times
         if output_dtype is None:
             output_dtype = eeg.dtype if np.issubdtype(eeg.dtype, np.floating) else np.float64
         fixed_maps = {
-            column_name: np.full((n_channels, n_times), np.nan, dtype=float)
+            column_name: np.full((n_locations, n_times), np.nan, dtype=float)
             for column_name in design_spec.fixed_column_names
         }
         fitted_random_effects = (
             np.full(eeg.shape, np.nan, dtype=output_dtype) if store_fitted_random_effects else None
         )
         marginal_eeg = np.full(eeg.shape, np.nan, dtype=output_dtype) if store_marginal_eeg else None
-        random_effect_variance_map = np.full((n_channels, n_times), np.nan, dtype=float)
-        residual_variance_map = np.full((n_channels, n_times), np.nan, dtype=float)
+        random_effect_variance_map = np.full((n_locations, n_times), np.nan, dtype=float)
+        residual_variance_map = np.full((n_locations, n_times), np.nan, dtype=float)
 
         diagnostics_rows: list[dict[str, object]] = []
 
@@ -86,9 +86,9 @@ class StatsModelsLMMBackend(BaseLMMBackend):
             if active_progress is not None:
                 task_id = active_progress.add_task("Fitting mixed models", total=n_features)
 
-            for channel_index in range(n_channels):
+            for location_index in range(n_locations):
                 for time_index in range(n_times):
-                    feature_vector = eeg[:, channel_index, time_index]
+                    feature_vector = eeg[:, location_index, time_index]
                     feature_data = metadata.copy(deep=False)
                     feature_data["y"] = feature_vector
                     converged = False
@@ -113,10 +113,10 @@ class StatsModelsLMMBackend(BaseLMMBackend):
 
                         for column_name in design_spec.fixed_column_names:
                             if column_name in mixed_result.fe_params.index:
-                                fixed_maps[column_name][channel_index, time_index] = float(mixed_result.fe_params[column_name])
+                                fixed_maps[column_name][location_index, time_index] = float(mixed_result.fe_params[column_name])
 
-                        random_effect_variance_map[channel_index, time_index] = float(np.squeeze(mixed_result.cov_re.to_numpy()))
-                        residual_variance_map[channel_index, time_index] = float(mixed_result.scale)
+                        random_effect_variance_map[location_index, time_index] = float(np.squeeze(mixed_result.cov_re.to_numpy()))
+                        residual_variance_map[location_index, time_index] = float(mixed_result.scale)
 
                         group_random_effects: dict[object, float] = {}
                         for group_label, random_effect_series in mixed_result.random_effects.items():
@@ -131,9 +131,9 @@ class StatsModelsLMMBackend(BaseLMMBackend):
                             dtype=output_dtype,
                         )
                         if fitted_random_effects is not None:
-                            fitted_random_effects[:, channel_index, time_index] = fitted_random_feature
+                            fitted_random_effects[:, location_index, time_index] = fitted_random_feature
                         if marginal_eeg is not None:
-                            marginal_eeg[:, channel_index, time_index] = feature_vector.astype(
+                            marginal_eeg[:, location_index, time_index] = feature_vector.astype(
                                 output_dtype,
                                 copy=False,
                             ) - fitted_random_feature
@@ -142,7 +142,8 @@ class StatsModelsLMMBackend(BaseLMMBackend):
 
                     diagnostics_rows.append(
                         {
-                            "channel": channel_index,
+                            "location": location_index,
+                            "channel": location_index,
                             "time": time_index,
                             "converged": converged,
                             "boundary_warning": boundary_warning,

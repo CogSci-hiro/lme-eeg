@@ -3,7 +3,7 @@
 </p>
 # LmeEEG
 
-Minimal Python package implementing the core lmeEEG workflow for epoched M/EEG data with **random intercepts**:
+Minimal Python package implementing the core lmeEEG workflow for epoched M/EEG/source-space data with **random intercepts**:
 
 1. parse a mixed-model style formula at the API edge,
 2. fit a random-intercept mixed model at each channel × timepoint,
@@ -15,7 +15,9 @@ Minimal Python package implementing the core lmeEEG workflow for epoched M/EEG d
 
 - One grouping factor in the public API
 - Random intercept only
-- Trial-wise epoched data shaped `(n_observations, n_channels, n_times)`
+- Trial-wise epoched data shaped `(n_observations, n_channels, n_times)` or `(n_observations, n_sources, n_times)`
+- Optional source-space metadata with `space="source"` and `source_names` / `location_names`
+- Chunked OLS and max-stat permutation paths over the location/time axes
 - Cluster / TFCE correction via MNE-Python when installed
 - Tiny simulation utilities for recovery / null checks
 

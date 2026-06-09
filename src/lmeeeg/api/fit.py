@@ -1,5 +1,6 @@
+import inspect
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,8 @@ from lmeeeg.backends.ols.numpy_backend import NumPyOLSBackend
 from lmeeeg.core.design import build_design_spec
 from lmeeeg.core.marginal import compute_marginal_eeg
 from lmeeeg.core.results import ConvergenceSummary, FitResult
+from lmeeeg.core.space import DTypePolicy, SpaceInfo, SpaceKind, resolve_output_dtype
+from lmeeeg.utils.checks import validate_eeg_and_metadata
 
 
 @dataclass(slots=True)
@@ -31,6 +34,22 @@ class FitConfig:
     output_dtype : np.dtype | None
         Output dtype for large returned EEG-like arrays. Defaults to the dtype of `eeg`
         when it is already floating-point.
+    space : {"sensor", "source", "generic"}
+        Meaning of the second data axis. This is metadata only; the core model
+        treats sensors, sources, parcels, and vertices as generic locations.
+    location_names : Sequence[str] | None
+        Optional names for the second data axis.
+    source_names : Sequence[str] | None
+        Source-space alias for `location_names`.
+    feature_names : Sequence[str] | None
+        Generic alias for `location_names`.
+    dtype : {"preserve", "float32", "float64"}
+        Dtype policy for large returned signal arrays. Statistical algebra uses
+        float64 regardless of this setting.
+    spatial_chunk_size : int | None
+        Optional chunk size over the second data axis for OLS.
+    time_chunk_size : int | None
+        Optional chunk size over the time axis for OLS.
     """
 
     lmm_backend_name: str = "statsmodels"
@@ -39,6 +58,55 @@ class FitConfig:
     store_fitted_random_effects: bool = False
     store_marginal_eeg: bool = True
     output_dtype: np.dtype | None = None
+    space: SpaceKind = "sensor"
+    location_names: Sequence[str] | None = None
+    source_names: Sequence[str] | None = None
+    feature_names: Sequence[str] | None = None
+    dtype: DTypePolicy = "preserve"
+    spatial_chunk_size: int | None = None
+    time_chunk_size: int | None = None
+
+
+def _resolve_location_names(config: FitConfig) -> Sequence[str] | None:
+    provided = [
+        names
+        for names in (config.location_names, config.source_names, config.feature_names)
+        if names is not None
+    ]
+    if len(provided) > 1:
+        first = list(provided[0])
+        if any(list(names) != first for names in provided[1:]):
+            raise ValueError(
+                "`location_names`, `source_names`, and `feature_names` are aliases; "
+                "provide only one value or identical values."
+            )
+    return provided[0] if provided else None
+
+
+def _fit_ols_mass_univariate(
+    ols_backend: Any,
+    marginal_eeg: np.ndarray,
+    design_matrix: np.ndarray,
+    column_names: list[str],
+    spatial_chunk_size: int | None,
+    time_chunk_size: int | None,
+):
+    parameters = inspect.signature(ols_backend.fit_mass_univariate).parameters
+    if "spatial_chunk_size" not in parameters and (spatial_chunk_size is not None or time_chunk_size is not None):
+        raise ValueError("Selected OLS backend does not support chunked fitting.")
+    if "spatial_chunk_size" not in parameters:
+        return ols_backend.fit_mass_univariate(
+            eeg=marginal_eeg,
+            design_matrix=design_matrix,
+            column_names=column_names,
+        )
+    return ols_backend.fit_mass_univariate(
+        eeg=marginal_eeg,
+        design_matrix=design_matrix,
+        column_names=column_names,
+        spatial_chunk_size=spatial_chunk_size,
+        time_chunk_size=time_chunk_size,
+    )
 
 
 # ==============================
@@ -83,6 +151,12 @@ def fit_lmm_mass_univariate(
         raise ValueError(
             "At least one of `store_fitted_random_effects` or `store_marginal_eeg` must be True."
         )
+    eeg = np.asanyarray(eeg)
+    space_info = SpaceInfo(kind=config.space, names=_resolve_location_names(config))
+    validate_eeg_and_metadata(eeg=eeg, metadata=metadata, space_info=space_info)
+    output_dtype = config.output_dtype
+    if output_dtype is None:
+        output_dtype = resolve_output_dtype(eeg.dtype, config.dtype)
     design_spec = build_design_spec(
         metadata=metadata,
         formula=formula,
@@ -103,7 +177,7 @@ def fit_lmm_mass_univariate(
         show_progress=config.show_progress,
         store_fitted_random_effects=config.store_fitted_random_effects,
         store_marginal_eeg=config.store_marginal_eeg,
-        output_dtype=config.output_dtype,
+        output_dtype=output_dtype,
     )
 
     if lmm_result.marginal_eeg is not None:
@@ -114,18 +188,26 @@ def fit_lmm_mass_univariate(
         raise RuntimeError("LMM backend returned neither marginalized EEG nor fitted random effects.")
 
     ols_backend = NumPyOLSBackend()
-    ols_result = ols_backend.fit_mass_univariate(
-        eeg=marginal_eeg,
+    ols_result = _fit_ols_mass_univariate(
+        ols_backend=ols_backend,
+        marginal_eeg=marginal_eeg,
         design_matrix=design_spec.fixed_design_matrix,
         column_names=design_spec.fixed_column_names,
+        spatial_chunk_size=config.spatial_chunk_size,
+        time_chunk_size=config.time_chunk_size,
     )
 
     convergence_summary = ConvergenceSummary.from_feature_table(lmm_result.feature_diagnostics)
+    n_observations, n_locations, n_times = eeg.shape
 
     return FitResult(
         formula=formula,
         variable_types=variable_types,
         design_spec=design_spec,
+        space_info=space_info,
+        n_observations=n_observations,
+        n_locations=n_locations,
+        n_times=n_times,
         fixed_effects_maps=lmm_result.fixed_effects_maps,
         random_effect_variance_map=lmm_result.random_effect_variance_map,
         residual_variance_map=lmm_result.residual_variance_map,
@@ -141,6 +223,11 @@ def fit_lmm_mass_univariate(
             "ols_backend": config.ols_backend_name,
             "store_fitted_random_effects": config.store_fitted_random_effects,
             "store_marginal_eeg": config.store_marginal_eeg,
-            "output_dtype": None if config.output_dtype is None else str(np.dtype(config.output_dtype)),
+            "output_dtype": None if output_dtype is None else str(np.dtype(output_dtype)),
+            "space": space_info.kind,
+            "location_names": None if space_info.names is None else list(space_info.names),
+            "spatial_chunk_size": config.spatial_chunk_size,
+            "time_chunk_size": config.time_chunk_size,
+            "dtype": config.dtype,
         },
     )

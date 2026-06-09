@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 
 from lmeeeg.backends.correction._regression import (
@@ -29,8 +31,23 @@ class MNETFCorrectionBackend(BaseCorrectionBackend):
         threshold: float | dict[str, float] | None,
         adjacency,
         verbose: bool | str | int | None = "info",
+        spatial_chunk_size: int | None = None,
+        time_chunk_size: int | None = None,
+        store_null_maps: bool = False,
     ) -> InferenceResult:
         """Run TFCE permutation correction with MNE."""
+        del spatial_chunk_size, time_chunk_size
+        if store_null_maps:
+            raise ValueError("TFCE correction stores only max TFCE statistics, not full null maps.")
+        job_size = fit_result.n_locations * fit_result.n_times * n_permutations
+        if job_size >= 100_000_000:
+            warnings.warn(
+                "Large TFCE job requested. LmeEEG stores only one max TFCE value per permutation, "
+                "but MNE TFCE still processes full statistic maps internally; consider parcellation, "
+                "a shorter time window, fewer development permutations, or a coarser TFCE step.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         emit_info(verbose, "Running TFCE correction for {0} with {1} permutations.", effect, n_permutations)
         configure_mne_runtime()
         try:
@@ -44,14 +61,14 @@ class MNETFCorrectionBackend(BaseCorrectionBackend):
         effect_sum_squares = float(prepared["effect_sum_squares"])
         degrees_of_freedom = int(prepared["degrees_of_freedom"])
         group_codes = prepared["group_codes"]
-        n_channels = int(prepared["n_channels"])
+        n_locations = int(prepared["n_locations"])
         n_times = int(prepared["n_times"])
         tfce_threshold = threshold if threshold is not None else {"start": 0.0, "step": 0.2}
         prepared_adjacency = adjacency
         if adjacency is not None:
             prepared_adjacency = _setup_adjacency(
                 adjacency=adjacency,
-                n_tests=n_channels * n_times,
+                n_tests=n_locations * n_times,
                 n_times=n_times,
             )
 
@@ -60,14 +77,14 @@ class MNETFCorrectionBackend(BaseCorrectionBackend):
             effect_residualized=effect_residualized,
             effect_sum_squares=effect_sum_squares,
             degrees_of_freedom=degrees_of_freedom,
-        ).reshape(n_channels, n_times)
+        ).reshape(n_locations, n_times)
         _, observed_tfce = _find_clusters(
             observed_t.T if prepared_adjacency is None else observed_t.T.ravel(),
             threshold=tfce_threshold,
             tail=tail,
             adjacency=prepared_adjacency,
         )
-        observed_tfce = np.asarray(observed_tfce, dtype=float).reshape(n_times, n_channels).T
+        observed_tfce = np.asarray(observed_tfce, dtype=float).reshape(n_times, n_locations).T
 
         rng = np.random.default_rng(seed)
         null_distribution = np.zeros(n_permutations, dtype=float)
@@ -89,7 +106,7 @@ class MNETFCorrectionBackend(BaseCorrectionBackend):
                     effect_residualized=effect_residualized,
                     effect_sum_squares=effect_sum_squares,
                     degrees_of_freedom=degrees_of_freedom,
-                ).reshape(n_channels, n_times)
+                ).reshape(n_locations, n_times)
                 _, permuted_tfce = _find_clusters(
                     permuted_t.T if prepared_adjacency is None else permuted_t.T.ravel(),
                     threshold=tfce_threshold,
@@ -125,5 +142,10 @@ class MNETFCorrectionBackend(BaseCorrectionBackend):
                 "permutation_scheme": "within_group_row_shuffle",
                 "statistic": "tfce_on_partial_effect_t",
                 "verbose": verbose,
+                "space": fit_result.space,
+                "n_locations": fit_result.n_locations,
+                "n_times": fit_result.n_times,
+                "store_null_maps": False,
+                "streams_null_maps": False,
             },
         )

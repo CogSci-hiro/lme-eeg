@@ -18,5 +18,8 @@ class BaseCorrectionBackend(ABC):
         threshold: float | dict[str, float] | None,
         adjacency: Any,
         verbose: bool | str | int | None = "info",
+        spatial_chunk_size: int | None = None,
+        time_chunk_size: int | None = None,
+        store_null_maps: bool = False,
     ) -> InferenceResult:
         """Run correction backend."""

@@ -130,7 +130,7 @@ Minimal Python tools for random-intercept mass-univariate mixed-effects EEG anal
       :class-card: sd-border-1 api-card
 
       - Random-intercept models
-      - Trial-wise epoched EEG shaped ``(n_observations, n_channels, n_times)``
+      - Trial-wise epoched EEG/source data shaped ``(n_observations, n_locations, n_times)``
       - OLS on marginalized EEG
       - Max-stat, cluster, and TFCE correction backends
 

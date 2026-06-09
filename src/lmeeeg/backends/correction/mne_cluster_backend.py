@@ -30,6 +30,9 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
         threshold: float | dict[str, float] | None,
         adjacency,
         verbose: bool | str | int | None = "info",
+        spatial_chunk_size: int | None = None,
+        time_chunk_size: int | None = None,
+        store_null_maps: bool = False,
     ) -> InferenceResult:
         """Run cluster-based permutation correction with MNE.
 
@@ -37,6 +40,9 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
         Permutations are restricted within the grouping factor used by the
         random-intercept model to preserve exchangeability.
         """
+        del spatial_chunk_size, time_chunk_size
+        if store_null_maps:
+            raise ValueError("Cluster correction stores only max cluster statistics, not full null maps.")
         emit_info(verbose, "Running cluster correction for {0} with {1} permutations.", effect, n_permutations)
         configure_mne_runtime()
         try:
@@ -50,21 +56,21 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
         effect_sum_squares = float(prepared["effect_sum_squares"])
         degrees_of_freedom = int(prepared["degrees_of_freedom"])
         group_codes = prepared["group_codes"]
-        n_channels = int(prepared["n_channels"])
+        n_locations = int(prepared["n_locations"])
         n_times = int(prepared["n_times"])
         observed_t = compute_effect_t_statistics(
             y_residualized=y_residualized,
             effect_residualized=effect_residualized,
             effect_sum_squares=effect_sum_squares,
             degrees_of_freedom=degrees_of_freedom,
-        ).reshape(n_channels, n_times)
+        ).reshape(n_locations, n_times)
         cluster_threshold = threshold if threshold is not None else 2.0
-        sample_shape = (n_times, n_channels)
+        sample_shape = (n_times, n_locations)
         prepared_adjacency = adjacency
         if adjacency is not None:
             prepared_adjacency = _setup_adjacency(
                 adjacency=adjacency,
-                n_tests=n_channels * n_times,
+                n_tests=n_locations * n_times,
                 n_times=n_times,
             )
 
@@ -97,7 +103,7 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
                     effect_residualized=effect_residualized,
                     effect_sum_squares=effect_sum_squares,
                     degrees_of_freedom=degrees_of_freedom,
-                ).reshape(n_channels, n_times)
+                ).reshape(n_locations, n_times)
                 _, permuted_cluster_stats = _find_clusters(
                     permuted_t.T if prepared_adjacency is None else permuted_t.T.ravel(),
                     threshold=cluster_threshold,
@@ -143,5 +149,9 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
                 "permutation_scheme": "within_group_row_shuffle",
                 "statistic": "partial_effect_t",
                 "verbose": verbose,
+                "space": fit_result.space,
+                "n_locations": fit_result.n_locations,
+                "n_times": fit_result.n_times,
+                "store_null_maps": False,
             },
         )

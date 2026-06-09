@@ -33,4 +33,4 @@ class BaseLMMBackend(ABC):
         store_marginal_eeg: bool = True,
         output_dtype: np.dtype | None = None,
     ) -> LMMBackendResult:
-        """Fit the backend over all channel × timepoint features."""
+        """Fit the backend over all location × timepoint features."""
