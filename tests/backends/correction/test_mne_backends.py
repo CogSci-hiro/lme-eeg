@@ -4,9 +4,12 @@ from scipy import sparse
 
 from lmeeeg.api.fit import fit_lmm_mass_univariate
 from lmeeeg.backends.correction._regression import (
+    compute_block_f_statistics,
     compute_effect_t_statistics,
+    prepare_block_regression,
     prepare_effect_regression,
 )
+from lmeeeg.backends.correction.mne_block_cluster_backend import MNEBlockClusterCorrectionBackend
 from lmeeeg.backends.correction.mne_cluster_backend import MNEClusterCorrectionBackend
 from lmeeeg.backends.correction.mne_tfce_backend import MNETFCorrectionBackend
 from lmeeeg.simulation.generator import simulate_random_intercept_dataset
@@ -126,6 +129,76 @@ def test_effect_regression_matches_ols_t_map() -> None:
     ).reshape(2, 4)
 
     assert np.allclose(t_values, fit_result.ols_t_values["condition[T.B]"])
+
+
+def test_single_column_block_f_matches_effect_t_squared() -> None:
+    simulated = simulate_random_intercept_dataset(
+        n_subjects=4,
+        n_trials_per_subject=6,
+        n_channels=2,
+        n_times=4,
+        seed=7,
+    )
+    fit_result = fit_lmm_mass_univariate(
+        eeg=simulated.eeg,
+        metadata=simulated.metadata,
+        formula="y ~ condition + latency + (1|subject)",
+        variable_types={
+            "condition": "categorical",
+            "latency": "numeric",
+            "subject": "group",
+        },
+    )
+    prepared = prepare_block_regression(
+        fit_result=fit_result,
+        reduced_formula="y ~ latency + (1|subject)",
+    )
+    f_values = compute_block_f_statistics(
+        y_residualized=prepared["y_residualized"],
+        block_projection=prepared["block_projection"],
+        y_sum_squares=prepared["y_sum_squares"],
+        block_rank=int(prepared["block_rank"]),
+        degrees_of_freedom=int(prepared["degrees_of_freedom"]),
+    ).reshape(2, 4)
+
+    assert prepared["block_column_names"] == ["condition[T.B]"]
+    assert np.allclose(f_values, fit_result.ols_t_values["condition[T.B]"] ** 2, atol=1e-8)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_block_cluster_backend_smoke() -> None:
+    simulated = simulate_random_intercept_dataset(
+        n_subjects=4,
+        n_trials_per_subject=4,
+        n_channels=2,
+        n_times=3,
+        seed=7,
+    )
+    fit_result = fit_lmm_mass_univariate(
+        eeg=simulated.eeg,
+        metadata=simulated.metadata,
+        formula="y ~ condition + latency + (1|subject)",
+        variable_types={
+            "condition": "categorical",
+            "latency": "numeric",
+            "subject": "group",
+        },
+    )
+
+    result = MNEBlockClusterCorrectionBackend().run(
+        fit_result=fit_result,
+        reduced_formula=["latency"],
+        n_permutations=10,
+        seed=7,
+        tail=1,
+        threshold=4.0,
+        adjacency=None,
+        verbose=False,
+    )
+
+    assert result.corrected_p_values.shape == (2, 3)
+    assert result.backend_metadata["block_columns"] == ["condition[T.B]"]
+    assert result.backend_metadata["statistic"] == "nested_block_partial_f"
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")

@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any
 
+from lmeeeg.backends.correction.mne_block_cluster_backend import MNEBlockClusterCorrectionBackend
+from lmeeeg.backends.correction.mne_block_tfce_backend import MNEBlockTFCECorrectionBackend
 from lmeeeg.backends.correction.maxstat_backend import MaxStatCorrectionBackend
 from lmeeeg.backends.correction.mne_cluster_backend import MNEClusterCorrectionBackend
 from lmeeeg.backends.correction.mne_tfce_backend import MNETFCorrectionBackend
@@ -106,3 +108,99 @@ def permute_fixed_effect(
         time_chunk_size=time_chunk_size,
         store_null_maps=store_null_maps,
     )
+
+
+def permute_fixed_block(
+    fit_result: FitResult,
+    reduced_formula: str | list[str],
+    correction: str = "cluster",
+    n_permutations: int = 1000,
+    seed: int = 0,
+    tail: int = 1,
+    threshold: float | dict[str, float] | None = None,
+    adjacency=None,
+    verbose: bool | str | int | None = "info",
+    spatial_chunk_size: int | None = None,
+    time_chunk_size: int | None = None,
+    store_null_maps: bool = False,
+    tfce_h_power: float = 2.0,
+    tfce_e_power: float = 0.5,
+) -> InferenceResult:
+    """Run nested-block permutation inference for fixed-effect columns.
+
+    The tested block is defined as the set difference between the full fixed
+    design stored on `fit_result` and the reduced fixed design built from
+    `reduced_formula` using the same design-matrix builder. The resulting
+    residualized block is tested jointly with a partial F statistic.
+
+    Parameters
+    ----------
+    fit_result : FitResult
+        Result returned by :func:`fit_lmm_mass_univariate`.
+    reduced_formula : str | list[str]
+        Reduced mixed formula, fixed formula, fixed RHS, or fixed-term list.
+        Examples: ``"y ~ latency + (1|subject)"``, ``"latency"``, or
+        ``["latency"]``. The reduced design must be nested in the full design.
+    correction : str
+        Correction backend: ``cluster`` or ``tfce``.
+    n_permutations : int
+        Number of within-group residual permutations.
+    seed : int
+        Random seed.
+    tail : int
+        Must be ``1`` because partial F statistics are non-negative.
+    threshold : float | dict[str, float] | None
+        Cluster threshold or TFCE threshold dictionary.
+    adjacency : Any
+        Optional adjacency matrix passed through to MNE correction backends.
+    verbose : bool | str | int | None
+        Verbosity forwarded to MNE-based correction backends.
+    spatial_chunk_size : int | None
+        Reserved for API symmetry; MNE cluster/TFCE currently process full maps.
+    time_chunk_size : int | None
+        Reserved for API symmetry; MNE cluster/TFCE currently process full maps.
+    store_null_maps : bool
+        Current backends store compact max-statistic null distributions only.
+    tfce_h_power : float
+        TFCE height exponent for ``correction="tfce"``.
+    tfce_e_power : float
+        TFCE extent exponent for ``correction="tfce"``.
+
+    Returns
+    -------
+    InferenceResult
+        Corrected nested-block inference output.
+    """
+    if correction == "cluster":
+        backend = MNEBlockClusterCorrectionBackend()
+        return backend.run(
+            fit_result=fit_result,
+            reduced_formula=reduced_formula,
+            n_permutations=n_permutations,
+            seed=seed,
+            tail=tail,
+            threshold=threshold,
+            adjacency=adjacency,
+            verbose=verbose,
+            spatial_chunk_size=spatial_chunk_size,
+            time_chunk_size=time_chunk_size,
+            store_null_maps=store_null_maps,
+        )
+    if correction == "tfce":
+        backend = MNEBlockTFCECorrectionBackend()
+        return backend.run(
+            fit_result=fit_result,
+            reduced_formula=reduced_formula,
+            n_permutations=n_permutations,
+            seed=seed,
+            tail=tail,
+            threshold=threshold,
+            adjacency=adjacency,
+            verbose=verbose,
+            spatial_chunk_size=spatial_chunk_size,
+            time_chunk_size=time_chunk_size,
+            store_null_maps=store_null_maps,
+            tfce_h_power=tfce_h_power,
+            tfce_e_power=tfce_e_power,
+        )
+    raise ValueError("Nested-block correction supports only 'cluster' and 'tfce'.")

@@ -28,6 +28,10 @@ class DesignSpec:
         Group labels in code order.
     metadata_index : np.ndarray
         Original metadata index values.
+    metadata : pd.DataFrame | None
+        Observation-level metadata used to build the design. Stored so later
+        inference helpers can build nested reduced designs with the same Patsy
+        machinery as the original fit.
     """
 
     parsed_formula: ParsedFormula
@@ -37,6 +41,7 @@ class DesignSpec:
     group_codes: np.ndarray
     group_labels: list[str]
     metadata_index: np.ndarray
+    metadata: pd.DataFrame | None = None
 
 
 # ==============================
@@ -91,4 +96,5 @@ def build_design_spec(
         group_codes=group_codes.astype(int),
         group_labels=[str(value) for value in unique_groups.tolist()],
         metadata_index=metadata.index.to_numpy(),
+        metadata=metadata.copy(),
     )

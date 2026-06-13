@@ -5,6 +5,7 @@ from lmeeeg.backends.correction._regression import (
     compute_effect_t_statistics,
     emit_info,
     configure_mne_runtime,
+    make_permutation_rng,
     permute_within_groups,
     progress_context,
     prepare_effect_regression,
@@ -83,7 +84,7 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
         )
         cluster_masks = cluster_outputs_to_masks(raw_clusters, sample_shape)
 
-        rng = np.random.default_rng(seed)
+        rng = make_permutation_rng(seed)
         null_distribution = np.zeros(n_permutations, dtype=float)
         with progress_context(verbose) as active_progress:
             task_id = None

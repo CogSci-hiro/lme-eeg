@@ -1,7 +1,7 @@
 from scipy import sparse
 
 from lmeeeg.api.fit import fit_lmm_mass_univariate
-from lmeeeg.api.infer import permute_fixed_effect
+from lmeeeg.api.infer import permute_fixed_block, permute_fixed_effect
 from lmeeeg.backends.correction.mne_cluster_backend import MNEClusterCorrectionBackend
 from lmeeeg.simulation.generator import simulate_random_intercept_dataset
 
@@ -110,3 +110,47 @@ def test_permute_fixed_effect_defaults_to_info_verbosity(monkeypatch) -> None:
 
     assert result is not None
     assert captured["verbose"] == "info"
+
+
+def test_permute_fixed_block_forwards_reduced_formula(monkeypatch) -> None:
+    simulated = simulate_random_intercept_dataset(
+        n_subjects=4,
+        n_trials_per_subject=4,
+        n_channels=2,
+        n_times=3,
+        seed=7,
+    )
+    fit_result = fit_lmm_mass_univariate(
+        eeg=simulated.eeg,
+        metadata=simulated.metadata,
+        formula="y ~ condition + latency + (1|subject)",
+        variable_types={
+            "condition": "categorical",
+            "latency": "numeric",
+            "subject": "group",
+        },
+    )
+    captured = {}
+
+    def fake_run(self, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    from lmeeeg.backends.correction.mne_block_cluster_backend import MNEBlockClusterCorrectionBackend
+
+    monkeypatch.setattr(MNEBlockClusterCorrectionBackend, "run", fake_run)
+
+    result = permute_fixed_block(
+        fit_result=fit_result,
+        reduced_formula=["latency"],
+        correction="cluster",
+        n_permutations=10,
+        seed=7,
+        threshold=4.0,
+        verbose=False,
+    )
+
+    assert result is not None
+    assert captured["reduced_formula"] == ["latency"]
+    assert captured["tail"] == 1
+    assert captured["verbose"] is False

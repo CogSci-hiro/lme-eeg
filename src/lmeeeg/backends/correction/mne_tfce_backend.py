@@ -6,6 +6,7 @@ from lmeeeg.backends.correction._regression import (
     compute_effect_t_statistics,
     emit_info,
     configure_mne_runtime,
+    make_permutation_rng,
     permute_within_groups,
     progress_context,
     prepare_effect_regression,
@@ -86,7 +87,7 @@ class MNETFCorrectionBackend(BaseCorrectionBackend):
         )
         observed_tfce = np.asarray(observed_tfce, dtype=float).reshape(n_times, n_locations).T
 
-        rng = np.random.default_rng(seed)
+        rng = make_permutation_rng(seed)
         null_distribution = np.zeros(n_permutations, dtype=float)
         with progress_context(verbose) as active_progress:
             task_id = None

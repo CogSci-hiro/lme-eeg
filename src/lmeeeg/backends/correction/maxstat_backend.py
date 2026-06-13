@@ -1,5 +1,6 @@
 import numpy as np
 
+from lmeeeg.backends.correction._regression import make_permutation_rng
 from lmeeeg.backends.correction.base import BaseCorrectionBackend
 from lmeeeg.core.results import FitResult, InferenceResult
 from lmeeeg.core.space import iter_spatiotemporal_chunks
@@ -37,7 +38,7 @@ class MaxStatCorrectionBackend(BaseCorrectionBackend):
         del threshold, adjacency, tail, verbose
         if store_null_maps:
             raise ValueError("Max-stat correction stores only the max statistic per permutation.")
-        rng = np.random.default_rng(seed)
+        rng = make_permutation_rng(seed)
         observed_t = fit_result.ols_t_values[effect]
         x_matrix = np.asarray(fit_result.design_spec.fixed_design_matrix, dtype=np.float64)
         if fit_result.marginal_eeg is None:
