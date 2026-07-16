@@ -5,6 +5,7 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
+from lmeeeg.backends.lmm.pymer4_backend import Pymer4LMMBackend
 from lmeeeg.backends.lmm.statsmodels_backend import StatsModelsLMMBackend
 from lmeeeg.backends.ols.numpy_backend import NumPyOLSBackend
 from lmeeeg.core.design import build_design_spec
@@ -50,6 +51,9 @@ class FitConfig:
         Optional chunk size over the second data axis for OLS.
     time_chunk_size : int | None
         Optional chunk size over the time axis for OLS.
+    compute_fixed_effect_t : bool
+        Whether supported LMM backends should return fixed-effect standard-error
+        and t-statistic maps.
     """
 
     lmm_backend_name: str = "statsmodels"
@@ -65,6 +69,7 @@ class FitConfig:
     dtype: DTypePolicy = "preserve"
     spatial_chunk_size: int | None = None
     time_chunk_size: int | None = None
+    compute_fixed_effect_t: bool = False
 
 
 def _resolve_location_names(config: FitConfig) -> Sequence[str] | None:
@@ -107,6 +112,29 @@ def _fit_ols_mass_univariate(
         spatial_chunk_size=spatial_chunk_size,
         time_chunk_size=time_chunk_size,
     )
+
+
+def _fit_lmm_backend(
+    lmm_backend: Any,
+    eeg: np.ndarray,
+    metadata: pd.DataFrame,
+    design_spec,
+    config: FitConfig,
+    output_dtype: np.dtype | None,
+):
+    parameters = inspect.signature(lmm_backend.fit_mass_univariate).parameters
+    kwargs = {
+        "eeg": eeg,
+        "metadata": metadata,
+        "design_spec": design_spec,
+        "show_progress": config.show_progress,
+        "store_fitted_random_effects": config.store_fitted_random_effects,
+        "store_marginal_eeg": config.store_marginal_eeg,
+        "output_dtype": output_dtype,
+    }
+    if "compute_fixed_effect_t" in parameters:
+        kwargs["compute_fixed_effect_t"] = config.compute_fixed_effect_t
+    return lmm_backend.fit_mass_univariate(**kwargs)
 
 
 # ==============================
@@ -164,19 +192,21 @@ def fit_lmm_mass_univariate(
         fit_intercept=fit_intercept,
     )
 
-    if config.lmm_backend_name != "statsmodels":
+    if config.lmm_backend_name == "statsmodels":
+        lmm_backend = StatsModelsLMMBackend()
+    elif config.lmm_backend_name == "pymer4":
+        lmm_backend = Pymer4LMMBackend()
+    else:
         raise ValueError(f"Unsupported LMM backend: {config.lmm_backend_name}")
     if config.ols_backend_name != "numpy":
         raise ValueError(f"Unsupported OLS backend: {config.ols_backend_name}")
 
-    lmm_backend = StatsModelsLMMBackend()
-    lmm_result = lmm_backend.fit_mass_univariate(
+    lmm_result = _fit_lmm_backend(
+        lmm_backend=lmm_backend,
         eeg=eeg,
         metadata=metadata,
         design_spec=design_spec,
-        show_progress=config.show_progress,
-        store_fitted_random_effects=config.store_fitted_random_effects,
-        store_marginal_eeg=config.store_marginal_eeg,
+        config=config,
         output_dtype=output_dtype,
     )
 
@@ -218,6 +248,8 @@ def fit_lmm_mass_univariate(
         ols_betas=ols_result.beta_maps,
         ols_t_values=ols_result.t_value_maps,
         ols_residual_variance=ols_result.residual_variance_map,
+        fixed_effects_t_maps=getattr(lmm_result, "fixed_effects_t_maps", None),
+        fixed_effects_se_maps=getattr(lmm_result, "fixed_effects_se_maps", None),
         backend_metadata={
             "lmm_backend": config.lmm_backend_name,
             "ols_backend": config.ols_backend_name,
@@ -229,5 +261,7 @@ def fit_lmm_mass_univariate(
             "spatial_chunk_size": config.spatial_chunk_size,
             "time_chunk_size": config.time_chunk_size,
             "dtype": config.dtype,
+            "compute_fixed_effect_t": config.compute_fixed_effect_t,
+            "lmm_fixed_effect_map_key_names": "patsy",
         },
     )

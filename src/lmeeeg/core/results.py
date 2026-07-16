@@ -57,6 +57,8 @@ class FitResult:
     n_observations: int = 0
     n_locations: int = 0
     n_times: int = 0
+    fixed_effects_t_maps: dict[str, np.ndarray] | None = None
+    fixed_effects_se_maps: dict[str, np.ndarray] | None = None
 
     @property
     def space(self) -> str:

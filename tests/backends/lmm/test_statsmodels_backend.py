@@ -47,3 +47,30 @@ def test_statsmodels_backend_can_store_random_effects() -> None:
     )
     assert result.fitted_random_effects is not None
     assert result.fitted_random_effects.shape == simulated.eeg.shape
+
+
+def test_statsmodels_backend_can_compute_fixed_effect_t_maps() -> None:
+    simulated = simulate_random_intercept_dataset(n_subjects=3, n_trials_per_subject=4, n_channels=1, n_times=2, seed=6)
+    design_spec = build_design_spec(
+        metadata=simulated.metadata,
+        formula="y ~ condition + latency + (1|subject)",
+        variable_types={
+            "condition": "categorical",
+            "latency": "numeric",
+            "subject": "group",
+        },
+    )
+    backend = StatsModelsLMMBackend()
+    result = backend.fit_mass_univariate(
+        eeg=simulated.eeg,
+        metadata=simulated.metadata,
+        design_spec=design_spec,
+        show_progress=False,
+        compute_fixed_effect_t=True,
+    )
+    assert result.fixed_effects_t_maps is not None
+    assert result.fixed_effects_se_maps is not None
+    assert set(result.fixed_effects_t_maps) == set(design_spec.fixed_column_names)
+    for column_name in design_spec.fixed_column_names:
+        assert result.fixed_effects_t_maps[column_name].shape == simulated.eeg.shape[1:]
+        assert result.fixed_effects_se_maps[column_name].shape == simulated.eeg.shape[1:]
