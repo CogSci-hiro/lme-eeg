@@ -17,6 +17,8 @@ class LMMBackendResult:
     random_effect_variance_map: np.ndarray
     residual_variance_map: np.ndarray
     feature_diagnostics: pd.DataFrame
+    fixed_effects_t_maps: dict[str, np.ndarray] | None = None
+    fixed_effects_se_maps: dict[str, np.ndarray] | None = None
 
 
 class BaseLMMBackend(ABC):
@@ -32,5 +34,6 @@ class BaseLMMBackend(ABC):
         store_fitted_random_effects: bool = False,
         store_marginal_eeg: bool = True,
         output_dtype: np.dtype | None = None,
+        compute_fixed_effect_t: bool = False,
     ) -> LMMBackendResult:
         """Fit the backend over all location × timepoint features."""

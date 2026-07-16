@@ -32,6 +32,7 @@ class StatsModelsLMMBackend(BaseLMMBackend):
         store_fitted_random_effects: bool = False,
         store_marginal_eeg: bool = True,
         output_dtype: np.dtype | None = None,
+        compute_fixed_effect_t: bool = False,
     ) -> LMMBackendResult:
         """Fit one random-intercept LMM per feature.
 
@@ -57,6 +58,22 @@ class StatsModelsLMMBackend(BaseLMMBackend):
             column_name: np.full((n_locations, n_times), np.nan, dtype=float)
             for column_name in design_spec.fixed_column_names
         }
+        t_maps = (
+            {
+                column_name: np.full((n_locations, n_times), np.nan, dtype=float)
+                for column_name in design_spec.fixed_column_names
+            }
+            if compute_fixed_effect_t
+            else None
+        )
+        se_maps = (
+            {
+                column_name: np.full((n_locations, n_times), np.nan, dtype=float)
+                for column_name in design_spec.fixed_column_names
+            }
+            if compute_fixed_effect_t
+            else None
+        )
         fitted_random_effects = (
             np.full(eeg.shape, np.nan, dtype=output_dtype) if store_fitted_random_effects else None
         )
@@ -114,6 +131,12 @@ class StatsModelsLMMBackend(BaseLMMBackend):
                         for column_name in design_spec.fixed_column_names:
                             if column_name in mixed_result.fe_params.index:
                                 fixed_maps[column_name][location_index, time_index] = float(mixed_result.fe_params[column_name])
+                                if compute_fixed_effect_t and t_maps is not None and se_maps is not None:
+                                    standard_error = float(mixed_result.bse_fe[column_name])
+                                    se_maps[column_name][location_index, time_index] = standard_error
+                                    t_maps[column_name][location_index, time_index] = (
+                                        float(mixed_result.fe_params[column_name]) / standard_error
+                                    )
 
                         random_effect_variance_map[location_index, time_index] = float(np.squeeze(mixed_result.cov_re.to_numpy()))
                         residual_variance_map[location_index, time_index] = float(mixed_result.scale)
@@ -162,4 +185,6 @@ class StatsModelsLMMBackend(BaseLMMBackend):
             random_effect_variance_map=random_effect_variance_map,
             residual_variance_map=residual_variance_map,
             feature_diagnostics=diagnostics_table,
+            fixed_effects_t_maps=t_maps,
+            fixed_effects_se_maps=se_maps,
         )
