@@ -140,6 +140,7 @@ class Pymer4LMMBackend(BaseLMMBackend):
 
                         converged = _converged(model)
                         boundary_warning = _has_boundary_warning(model)
+                        message = " | ".join(_model_warnings(model))
                     except Exception as error:  # pragma: no cover - exercised by optional pymer4 stack
                         message = str(error)
 
