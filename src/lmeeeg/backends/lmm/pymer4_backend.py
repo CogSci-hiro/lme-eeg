@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-import inspect
+import os
+from pathlib import Path
 import re
 from typing import Any
 
@@ -35,12 +36,15 @@ class Pymer4LMMBackend(BaseLMMBackend):
         output_dtype: np.dtype | None = None,
         compute_fixed_effect_t: bool = False,
     ) -> LMMBackendResult:
+        _prepare_pymer4_environment()
         try:
-            from pymer4.models import Lmer
+            import polars as pl
+            from pymer4.models import lmer
         except Exception as import_error:  # pragma: no cover - depends on optional R stack
             raise ImportError(
-                "Pymer4LMMBackend requires pymer4 plus an R install with lme4/lmerTest. "
-                "Install the R dependencies, then install pymer4 in this environment."
+                "Pymer4LMMBackend requires pymer4 plus its Python dependencies and an R install "
+                "with lme4/lmerTest. Install R packages lme4, lmerTest, emmeans, report, then "
+                "install pymer4, rpy2, polars, pyarrow, great-tables, scikit-learn, and formulae."
             ) from import_error
 
         n_observations, n_locations, n_times = eeg.shape
@@ -99,33 +103,32 @@ class Pymer4LMMBackend(BaseLMMBackend):
                     message = ""
 
                     try:
-                        model = Lmer(lme4_formula, data=feature_data)
+                        model_data = pl.from_pandas(feature_data)
+                        model = lmer(lme4_formula, data=model_data)
+                        factors = _factor_levels(feature_data)
+                        if factors:
+                            model.set_factors(factors)
                         _fit_model(model)
 
                         coefs = _coefficient_table(model)
                         for column_name in fixed_names:
-                            term = _resolve_term(column_name, coefs.index)
+                            term = _resolve_term(column_name, coefs["term"].to_list())
                             if term is None:
                                 raise KeyError(
                                     f"Could not resolve Patsy fixed-effect term '{column_name}' "
-                                    f"against lme4 coefficient terms {list(coefs.index)!r}."
+                                    f"against lme4 coefficient terms {coefs['term'].to_list()!r}."
                                 )
-                            fixed_maps[column_name][location_index, time_index] = float(
-                                coefs.loc[term, "Estimate"]
-                            )
+                            row = coefs.filter(pl.col("term") == term).row(0, named=True)
+                            fixed_maps[column_name][location_index, time_index] = float(row["estimate"])
                             if compute_fixed_effect_t and t_maps is not None and se_maps is not None:
-                                se_maps[column_name][location_index, time_index] = float(
-                                    coefs.loc[term, _first_existing_column(coefs, ("SE", "Std. Error"))]
-                                )
-                                t_maps[column_name][location_index, time_index] = float(
-                                    coefs.loc[term, _first_existing_column(coefs, ("T-stat", "t value", "T.value"))]
-                                )
+                                se_maps[column_name][location_index, time_index] = float(row["std_error"])
+                                t_maps[column_name][location_index, time_index] = float(row["t_stat"])
 
                         random_effect_variance_map[location_index, time_index] = _total_re_variance(model)
                         residual_variance_map[location_index, time_index] = _residual_variance(model)
 
-                        full_fitted = _predict(model, feature_data, use_rfx=True)
-                        fixed_only = _predict(model, feature_data, use_rfx=False)
+                        full_fitted = _predict(model, model_data, use_rfx=True)
+                        fixed_only = _predict(model, model_data, use_rfx=False)
                         random_contrib = (full_fitted - fixed_only).astype(output_dtype, copy=False)
 
                         if fitted_random_effects is not None:
@@ -176,25 +179,42 @@ def _make_progress() -> Progress:
     )
 
 
+def _prepare_pymer4_environment() -> None:
+    os.environ.setdefault("RPY2_CFFI_MODE", "ABI")
+    local_r_library = Path(__file__).resolve().parents[4] / ".venv" / "R" / "library"
+    if local_r_library.exists():
+        current = os.environ.get("R_LIBS_USER")
+        local = str(local_r_library)
+        if current:
+            if local not in current.split(os.pathsep):
+                os.environ["R_LIBS_USER"] = os.pathsep.join([local, current])
+        else:
+            os.environ["R_LIBS_USER"] = local
+
+
 def _fit_model(model: Any) -> None:
-    try:
-        model.fit(summarize=False)
-    except TypeError:
-        model.fit()
+    model.fit(summary=False, verbose=False)
 
 
-def _coefficient_table(model: Any) -> pd.DataFrame:
-    coefs = getattr(model, "coefs", None)
-    if coefs is None:
-        coefs = getattr(model, "coef_table", None)
-    if coefs is None:
-        raise AttributeError("Could not find pymer4 coefficient table on model.coefs or model.coef_table.")
-    if not isinstance(coefs, pd.DataFrame):
-        coefs = pd.DataFrame(coefs)
-    missing_columns = {"Estimate"} - set(coefs.columns)
+def _coefficient_table(model: Any):
+    coefs = model.result_fit
+    missing_columns = {"term", "estimate", "std_error", "t_stat"} - set(coefs.columns)
     if missing_columns:
         raise AttributeError(f"pymer4 coefficient table is missing columns: {sorted(missing_columns)}")
     return coefs
+
+
+def _factor_levels(data: pd.DataFrame) -> dict[str, list[Any]]:
+    factors: dict[str, list[Any]] = {}
+    for column_name in data.columns:
+        if column_name == "y":
+            continue
+        series = data[column_name]
+        if isinstance(series.dtype, pd.CategoricalDtype):
+            factors[column_name] = list(series.cat.categories)
+        elif pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series):
+            factors[column_name] = sorted(series.dropna().unique().tolist())
+    return factors
 
 
 def _resolve_term(fixed_name: str, available_terms) -> str | None:
@@ -228,14 +248,9 @@ def _convert_patsy_piece(piece: str) -> str:
     return f"{variable}{level}"
 
 
-def _predict(model: Any, data: pd.DataFrame, use_rfx: bool) -> np.ndarray:
+def _predict(model: Any, data: Any, use_rfx: bool) -> np.ndarray:
     """Return predictions aligned to ``data`` with or without random effects."""
-    predict = model.predict
-    kwargs = _prediction_kwargs(predict, use_rfx=use_rfx)
-    try:
-        predicted = predict(data, **kwargs)
-    except TypeError:
-        predicted = predict(data=data, **kwargs)
+    predicted = model.predict(data, use_rfx=use_rfx)
     values = np.asarray(predicted, dtype=float)
     if values.ndim > 1:
         values = np.ravel(values)
@@ -244,144 +259,31 @@ def _predict(model: Any, data: pd.DataFrame, use_rfx: bool) -> np.ndarray:
     return values
 
 
-def _prediction_kwargs(predict: Any, use_rfx: bool) -> dict[str, Any]:
-    parameters = inspect.signature(predict).parameters
-    kwargs: dict[str, Any] = {}
-    if "use_rfx" in parameters:
-        kwargs["use_rfx"] = use_rfx
-    elif "use_re" in parameters:
-        kwargs["use_re"] = use_rfx
-    elif "re_formula" in parameters:
-        kwargs["re_formula"] = None if use_rfx else "NA"
-    elif "re_form" in parameters:
-        kwargs["re_form"] = None if use_rfx else "NA"
-    else:
-        raise AttributeError("pymer4 predict() does not expose a random-effect inclusion argument.")
-
-    if "verify_predictions" in parameters:
-        kwargs["verify_predictions"] = False
-    if "skip_data_checks" in parameters:
-        kwargs["skip_data_checks"] = True
-    return kwargs
-
-
 def _total_re_variance(model: Any) -> float:
-    """Return the sum of random-effect variances as a best-effort diagnostic."""
-    for attribute in ("ranef_var", "ranef_var_", "random_effects_var"):
-        if hasattr(model, attribute):
-            value = getattr(model, attribute)
-            total = _sum_numeric_variance(value, exclude_residual=True)
-            if np.isfinite(total):
-                return total
-    return np.nan
+    """Return the sum of random-effect variances as a diagnostic."""
+    ranef_var = model.ranef_var
+    table = ranef_var.filter(~ranef_var["group"].str.contains("Residual"))
+    return float((table["estimate"] ** 2).sum()) if table.height else np.nan
 
 
 def _residual_variance(model: Any) -> float:
-    """Return residual variance as a best-effort diagnostic."""
-    for attribute in ("sigma", "resid_sd", "residual_sd"):
-        if hasattr(model, attribute):
-            value = getattr(model, attribute)
-            try:
-                return float(value) ** 2
-            except (TypeError, ValueError):
-                pass
-
-    for attribute in ("ranef_var", "ranef_var_", "fit_stats"):
-        if hasattr(model, attribute):
-            value = getattr(model, attribute)
-            residual = _extract_residual_variance(value)
-            if np.isfinite(residual):
-                return residual
-    return np.nan
-
-
-def _sum_numeric_variance(value: Any, exclude_residual: bool) -> float:
-    if isinstance(value, pd.DataFrame):
-        table = value.copy()
-        if exclude_residual:
-            mask = ~table.index.astype(str).str.contains("resid", case=False, regex=True)
-            table = table.loc[mask]
-        numeric = table.select_dtypes(include=[np.number]).to_numpy(dtype=float)
-        return float(np.nansum(numeric)) if numeric.size else np.nan
-    if isinstance(value, pd.Series):
-        series = value.copy()
-        if exclude_residual:
-            series = series.loc[~series.index.astype(str).str.contains("resid", case=False, regex=True)]
-        numeric = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
-        return float(np.nansum(numeric)) if numeric.size else np.nan
-    if isinstance(value, dict):
-        total = 0.0
-        seen = False
-        for key, item in value.items():
-            if exclude_residual and "resid" in str(key).lower():
-                continue
-            partial = _sum_numeric_variance(item, exclude_residual=False)
-            if np.isfinite(partial):
-                total += partial
-                seen = True
-        return total if seen else np.nan
-    try:
-        numeric_value = float(value)
-    except (TypeError, ValueError):
-        return np.nan
-    return numeric_value
-
-
-def _extract_residual_variance(value: Any) -> float:
-    if isinstance(value, pd.DataFrame):
-        residual_rows = value.index.astype(str).str.contains("resid", case=False, regex=True)
-        if residual_rows.any():
-            numeric = value.loc[residual_rows].select_dtypes(include=[np.number]).to_numpy(dtype=float)
-            return float(np.ravel(numeric)[0]) if numeric.size else np.nan
-    if isinstance(value, pd.Series):
-        residual_rows = value.index.astype(str).str.contains("resid", case=False, regex=True)
-        if residual_rows.any():
-            numeric = pd.to_numeric(value.loc[residual_rows], errors="coerce").to_numpy(dtype=float)
-            return float(np.ravel(numeric)[0]) if numeric.size else np.nan
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if "sigma" in str(key).lower() or "resid" in str(key).lower():
-                try:
-                    numeric = float(item)
-                    return numeric**2 if "sigma" in str(key).lower() else numeric
-                except (TypeError, ValueError):
-                    residual = _extract_residual_variance(item)
-                    if np.isfinite(residual):
-                        return residual
-    return np.nan
+    """Return residual variance as a diagnostic."""
+    return float(model.result_fit_stats["sigma"].item() ** 2)
 
 
 def _converged(model: Any) -> bool:
-    for attribute in ("converged", "convergence_status"):
-        if hasattr(model, attribute):
-            value = getattr(model, attribute)
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, str):
-                return value.lower() in {"converged", "ok", "true", "success"}
     warnings_text = " ".join(_model_warnings(model)).lower()
     return "failed to converge" not in warnings_text and "convergence" not in warnings_text
 
 
 def _has_boundary_warning(model: Any) -> bool:
-    return any("boundary" in warning.lower() for warning in _model_warnings(model))
+    warnings_text = " ".join(_model_warnings(model)).lower()
+    return "boundary" in warnings_text or "singular" in warnings_text
 
 
 def _model_warnings(model: Any) -> list[str]:
-    warnings: list[str] = []
-    for attribute in ("warnings", "fit_warnings", "ranef_warnings"):
-        value = getattr(model, attribute, None)
-        if value is None:
-            continue
-        if isinstance(value, str):
-            warnings.append(value)
-        else:
-            warnings.extend(str(item) for item in value)
+    warnings = [str(item) for item in getattr(model, "r_console", [])]
+    convergence_status = getattr(model, "convergence_status", "")
+    if convergence_status:
+        warnings.append(str(convergence_status))
     return warnings
-
-
-def _first_existing_column(table: pd.DataFrame, names: tuple[str, ...]) -> str:
-    for name in names:
-        if name in table.columns:
-            return name
-    raise AttributeError(f"pymer4 coefficient table is missing all columns: {list(names)}")
