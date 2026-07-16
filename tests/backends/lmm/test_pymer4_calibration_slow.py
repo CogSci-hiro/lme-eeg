@@ -21,10 +21,20 @@ def _calibration_settings() -> tuple[int, int]:
     return n_sims, n_permutations
 
 
-def _simulate_null_or_power(seed: int, random_slope: bool, fixed_effect: float) -> tuple[np.ndarray, pd.DataFrame]:
+def _mc_se(p_value: float, n_sims: int) -> float:
+    return float(np.sqrt(p_value * (1.0 - p_value) / n_sims))
+
+
+def _simulate_null_or_power(
+    seed: int,
+    random_slope: bool,
+    fixed_effect: float,
+    n_subjects: int = 6,
+    n_items: int = 5,
+) -> tuple[np.ndarray, pd.DataFrame]:
     rng = np.random.default_rng(seed)
-    subjects = [f"s{i}" for i in range(6)]
-    items = [f"i{i}" for i in range(5)]
+    subjects = [f"s{i}" for i in range(n_subjects)]
+    items = [f"i{i}" for i in range(n_items)]
     rows = []
     for subject in subjects:
         for item in items:
@@ -57,8 +67,23 @@ def _simulate_null_or_power(seed: int, random_slope: bool, fixed_effect: float) 
     return eeg, metadata
 
 
-def _run_pipeline_rejects(seed: int, correction: str, random_slope: bool, fixed_effect: float, n_permutations: int) -> bool:
-    eeg, metadata = _simulate_null_or_power(seed=seed, random_slope=random_slope, fixed_effect=fixed_effect)
+def _run_pipeline_rejects(
+    seed: int,
+    correction: str,
+    random_slope: bool,
+    fixed_effect: float,
+    n_permutations: int,
+    permutation_scheme: str | None = None,
+    n_subjects: int = 6,
+    n_items: int = 5,
+) -> bool:
+    eeg, metadata = _simulate_null_or_power(
+        seed=seed,
+        random_slope=random_slope,
+        fixed_effect=fixed_effect,
+        n_subjects=n_subjects,
+        n_items=n_items,
+    )
     formula = "y ~ cond + (1 + cond | subject) + (1 | item)" if random_slope else "y ~ cond + (1 | subject) + (1 | item)"
     fit_result = fit_lmm_mass_univariate(
         eeg=eeg,
@@ -75,8 +100,91 @@ def _run_pipeline_rejects(seed: int, correction: str, random_slope: bool, fixed_
         seed=seed + 100_000,
         threshold=2.0 if correction == "cluster" else None,
         verbose=False,
+        permutation_scheme=permutation_scheme,
     )
     return bool(np.nanmin(inference.corrected_p_values) <= ALPHA)
+
+
+def _estimate_c1_fwer(
+    correction: str,
+    permutation_scheme: str,
+    n_sims: int,
+    n_permutations: int,
+    n_subjects: int,
+    n_items: int,
+    seed_offset: int,
+) -> tuple[float, float]:
+    progress_every = int(os.environ.get("LMEEG_PROGRESS_EVERY", "0"))
+    rejections = []
+    for sim in range(n_sims):
+        rejected = _run_pipeline_rejects(
+            seed=seed_offset + sim,
+            correction=correction,
+            random_slope=False,
+            fixed_effect=0.0,
+            n_permutations=n_permutations,
+            permutation_scheme=permutation_scheme,
+            n_subjects=n_subjects,
+            n_items=n_items,
+        )
+        rejections.append(rejected)
+        if progress_every and ((sim + 1) % progress_every == 0 or sim + 1 == n_sims):
+            current = float(np.mean(rejections))
+            print(
+                f"PROGRESS C1 size={n_subjects}x{n_items} scheme={permutation_scheme} "
+                f"backend={correction} sim={sim + 1}/{n_sims} "
+                f"rejections={int(np.sum(rejections))} fwer={current:.3f}",
+                flush=True,
+            )
+    fwer = float(np.mean(rejections))
+    return fwer, _mc_se(fwer, n_sims)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("correction", ["maxstat", "cluster", "tfce"])
+@pytest.mark.parametrize("permutation_scheme", ["free", "within_subject"])
+def test_pymer4_d2_c1_scheme_grid(correction: str, permutation_scheme: str) -> None:
+    _require_pymer4()
+    n_sims = int(os.environ.get("LMEEG_D2_N_SIMS", "300"))
+    n_permutations = int(os.environ.get("LMEEG_D2_N_PERMUTATIONS", "500"))
+    fwer, se = _estimate_c1_fwer(
+        correction=correction,
+        permutation_scheme=permutation_scheme,
+        n_sims=n_sims,
+        n_permutations=n_permutations,
+        n_subjects=6,
+        n_items=5,
+        seed_offset=40_000,
+    )
+    print(
+        f"RESULT D2 size=6x5 scheme={permutation_scheme} backend={correction} "
+        f"fwer={fwer:.3f} mc_se={se:.3f} n_sims={n_sims} n_permutations={n_permutations}"
+    )
+    assert 0.0 <= fwer <= 1.0
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("correction", ["maxstat", "cluster", "tfce"])
+@pytest.mark.parametrize(("n_subjects", "n_items"), [(12, 10), (24, 20), (36, 30)])
+def test_pymer4_d3_c1_size_sweep(correction: str, n_subjects: int, n_items: int) -> None:
+    _require_pymer4()
+    n_sims = int(os.environ.get("LMEEG_D3_N_SIMS", "60"))
+    n_permutations = int(os.environ.get("LMEEG_D3_N_PERMUTATIONS", "500"))
+    permutation_scheme = os.environ.get("LMEEG_D3_PERMUTATION_SCHEME", "within_subject")
+    fwer, se = _estimate_c1_fwer(
+        correction=correction,
+        permutation_scheme=permutation_scheme,
+        n_sims=n_sims,
+        n_permutations=n_permutations,
+        n_subjects=n_subjects,
+        n_items=n_items,
+        seed_offset=50_000 + n_subjects * 100 + n_items,
+    )
+    print(
+        f"RESULT D3 size={n_subjects}x{n_items} scheme={permutation_scheme} backend={correction} "
+        f"fwer={fwer:.3f} mc_se={se:.3f} n_sims={n_sims} n_permutations={n_permutations}"
+    )
+    assert 0.0 <= fwer <= 1.0
 
 
 @pytest.mark.slow

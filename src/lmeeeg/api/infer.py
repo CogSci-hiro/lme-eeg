@@ -42,6 +42,7 @@ def permute_fixed_effect(
     spatial_chunk_size: int | None = None,
     time_chunk_size: int | None = None,
     store_null_maps: bool = False,
+    permutation_scheme: str | None = None,
 ) -> InferenceResult:
     """Run permutation-based inference for one fixed effect.
 
@@ -76,6 +77,9 @@ def permute_fixed_effect(
         Reserved for backends that can expose full null maps. Defaults to
         ``False``; current correction backends store compact max-statistic null
         distributions only.
+    permutation_scheme : {"free", "within_subject"} | None
+        Optional effect-vector permutation scheme for maxstat, cluster, and
+        TFCE correction. ``None`` uses each backend's default.
 
     Returns
     -------
@@ -107,6 +111,7 @@ def permute_fixed_effect(
         spatial_chunk_size=spatial_chunk_size,
         time_chunk_size=time_chunk_size,
         store_null_maps=store_null_maps,
+        **({} if permutation_scheme is None else {"permutation_scheme": permutation_scheme}),
     )
 
 

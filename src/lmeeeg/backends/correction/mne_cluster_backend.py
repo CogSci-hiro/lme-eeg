@@ -6,7 +6,7 @@ from lmeeeg.backends.correction._regression import (
     emit_info,
     configure_mne_runtime,
     make_permutation_rng,
-    permute_within_groups,
+    permuted_effect_for_scheme,
     progress_context,
     prepare_effect_regression,
 )
@@ -34,6 +34,7 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
         spatial_chunk_size: int | None = None,
         time_chunk_size: int | None = None,
         store_null_maps: bool = False,
+        permutation_scheme: str = "within_subject",
     ) -> InferenceResult:
         """Run cluster-based permutation correction with MNE.
 
@@ -44,6 +45,8 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
         del spatial_chunk_size, time_chunk_size
         if store_null_maps:
             raise ValueError("Cluster correction stores only max cluster statistics, not full null maps.")
+        if permutation_scheme not in {"free", "within_subject"}:
+            raise ValueError("permutation_scheme must be 'free' or 'within_subject'.")
         emit_info(verbose, "Running cluster correction for {0} with {1} permutations.", effect, n_permutations)
         configure_mne_runtime()
         try:
@@ -54,6 +57,8 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
         prepared = prepare_effect_regression(fit_result=fit_result, effect=effect)
         y_residualized = prepared["y_residualized"]
         effect_residualized = prepared["effect_residualized"]
+        effect_column = prepared["effect_column"]
+        nuisance_design = prepared["nuisance_design"]
         effect_sum_squares = float(prepared["effect_sum_squares"])
         degrees_of_freedom = int(prepared["degrees_of_freedom"])
         group_codes = prepared["group_codes"]
@@ -94,15 +99,17 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
                     total=n_permutations,
                 )
             for permutation_index in range(n_permutations):
-                y_permuted = permute_within_groups(
-                    y_residualized=y_residualized,
+                permuted_effect, permuted_effect_sum_squares = permuted_effect_for_scheme(
+                    effect_column=effect_column,
+                    nuisance_design=nuisance_design,
                     group_codes=group_codes,
                     rng=rng,
+                    permutation_scheme=permutation_scheme,
                 )
                 permuted_t = compute_effect_t_statistics(
-                    y_residualized=y_permuted,
-                    effect_residualized=effect_residualized,
-                    effect_sum_squares=effect_sum_squares,
+                    y_residualized=y_residualized,
+                    effect_residualized=permuted_effect,
+                    effect_sum_squares=permuted_effect_sum_squares,
                     degrees_of_freedom=degrees_of_freedom,
                 ).reshape(n_locations, n_times)
                 _, permuted_cluster_stats = _find_clusters(
@@ -147,7 +154,7 @@ class MNEClusterCorrectionBackend(BaseCorrectionBackend):
                 "backend": "mne_cluster",
                 "n_permutations": n_permutations,
                 "threshold": cluster_threshold,
-                "permutation_scheme": "within_group_row_shuffle",
+                "permutation_scheme": permutation_scheme,
                 "statistic": "partial_effect_t",
                 "verbose": verbose,
                 "space": fit_result.space,

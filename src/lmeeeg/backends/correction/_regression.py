@@ -101,6 +101,8 @@ def prepare_effect_regression(
     return {
         "y_residualized": y_residualized,
         "effect_residualized": effect_residualized,
+        "effect_column": effect_column,
+        "nuisance_design": x_reduced if reduced_columns else np.empty((n_observations, 0)),
         "effect_sum_squares": effect_ss,
         "degrees_of_freedom": degrees_of_freedom,
         "group_codes": group_codes,
@@ -108,6 +110,19 @@ def prepare_effect_regression(
         "n_channels": n_locations,
         "n_times": n_times,
     }
+
+
+def max_permutation_p_values(null_distribution: np.ndarray, observed: np.ndarray) -> np.ndarray:
+    """Compute max-stat corrected p-values using the (b + 1) / (m + 1) form."""
+    null_distribution = np.asarray(null_distribution, dtype=float)
+    observed = np.asarray(observed, dtype=float)
+    return (
+        1
+        + np.sum(
+            null_distribution[(slice(None),) + (None,) * observed.ndim] >= np.abs(observed)[None, ...],
+            axis=0,
+        )
+    ) / (null_distribution.shape[0] + 1)
 
 
 def compute_effect_t_statistics(
@@ -309,6 +324,48 @@ def permute_within_groups(
         if group_indices.size > 1:
             permuted_indices[group_indices] = group_indices[rng.permutation(group_indices.size)]
     return y_residualized[permuted_indices, :]
+
+
+def permute_vector_within_groups(
+    values: np.ndarray,
+    group_codes: np.ndarray,
+    rng: np.random.Generator | np.random.RandomState,
+) -> np.ndarray:
+    """Permute a one-dimensional vector within exchangeability blocks."""
+    values = np.asarray(values)
+    permuted = values.copy()
+    for group_code in np.unique(group_codes):
+        group_indices = np.flatnonzero(group_codes == group_code)
+        if group_indices.size > 1:
+            permuted[group_indices] = values[group_indices[rng.permutation(group_indices.size)]]
+    return permuted
+
+
+def permuted_effect_for_scheme(
+    effect_column: np.ndarray,
+    nuisance_design: np.ndarray,
+    group_codes: np.ndarray,
+    rng: np.random.Generator | np.random.RandomState,
+    permutation_scheme: str,
+) -> tuple[np.ndarray, float]:
+    """Permute the tested effect vector and residualize it against nuisance terms."""
+    if permutation_scheme == "free":
+        permuted_effect = np.asarray(effect_column)[rng.permutation(effect_column.shape[0])]
+    elif permutation_scheme == "within_subject":
+        permuted_effect = permute_vector_within_groups(
+            values=effect_column,
+            group_codes=group_codes,
+            rng=rng,
+        )
+    else:
+        raise ValueError("permutation_scheme must be 'free' or 'within_subject'.")
+    effect_residualized = residualize_against_nuisance(permuted_effect, nuisance_design)
+    if effect_residualized.ndim == 2:
+        effect_residualized = effect_residualized[:, 0]
+    effect_sum_squares = float(effect_residualized @ effect_residualized)
+    if np.isclose(effect_sum_squares, 0.0):
+        raise ValueError("Permuted effect has no residualized variation after removing nuisance regressors.")
+    return effect_residualized, effect_sum_squares
 
 
 def cluster_outputs_to_masks(
