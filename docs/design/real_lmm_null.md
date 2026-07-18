@@ -111,17 +111,21 @@ fits for 300 calibration datasets = 9,609,600,000
 ```
 
 Local timing on 2026-07-18 with the verified pymer4/R stack was measured on a
-6-subject x 5-item random-slope design:
+6-subject x 5-item random-slope design. The first probe included startup
+overhead:
 
 ```text
 8 pymer4/lmerTest fits in 16.148 s = 2.019 s per feature fit
 ```
 
-At that rate, the requested tiny 4-feature, 300-sim, 500-permutation C2 cell is
-approximately 14 days of serial pymer4/rpy2 fitting for the LMM t maps alone.
-A single realistic 64x500 EEG dataset with 1,000 permutations would be measured
-in years. pymer4/rpy2 is therefore not a viable production engine for dense
-real-LMM permutation or TFCE nulls.
+After warming the R/pymer4 bridge, the same surface fit 12 random-slope models
+in 4.266 s, or 0.355 s per feature fit. A calibration-only smoke test that
+computed one observed 2x2 map plus two null maps took about 5.3 s per simulated
+dataset. Extrapolating that smoke path to the requested 300 simulations and 500
+permutations gives roughly 60-75 serial hours per C1/C2/C3 scenario. A single
+realistic 64x500 EEG dataset with 1,000 permutations would still be measured in
+months to years. pymer4/rpy2 is therefore not a viable production engine for
+dense real-LMM permutation or TFCE nulls.
 
 Recommended path:
 
