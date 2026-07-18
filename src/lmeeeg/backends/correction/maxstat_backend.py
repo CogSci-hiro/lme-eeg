@@ -32,15 +32,16 @@ class MaxStatCorrectionBackend(BaseCorrectionBackend):
         spatial_chunk_size: int | None = None,
         time_chunk_size: int | None = None,
         store_null_maps: bool = False,
-        permutation_scheme: str = "free",
+        permutation_scheme: str = "within_subject",
     ) -> InferenceResult:
         """Run max-statistic correction.
 
         Notes
         -----
-        This backend uses row shuffling of the design matrix as a simple MVP
-        permutation scheme on marginalized data. It is intentionally explicit
-        and easy to inspect.
+        By default this backend permutes the tested effect within subject,
+        matching the crossed-intercept calibration envelope in
+        ``docs/CALIBRATION.md``. Free row shuffling remains available by
+        passing ``permutation_scheme="free"`` explicitly.
         """
         del threshold, adjacency, tail, verbose
         if store_null_maps:

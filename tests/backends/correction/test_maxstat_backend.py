@@ -37,7 +37,7 @@ def test_maxstat_backend_smoke() -> None:
         adjacency=None,
     )
     assert inference.corrected_p_values.shape == (2, 3)
-    assert inference.backend_metadata["permutation_scheme"] == "free"
+    assert inference.backend_metadata["permutation_scheme"] == "within_subject"
 
 
 def test_maxstat_backend_chunked_matches_full_fit() -> None:
