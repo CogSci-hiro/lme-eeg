@@ -72,7 +72,19 @@ def _simulate_null_or_power(
     return eeg, metadata
 
 
-def _fit_lmer_condition_effect(y: np.ndarray, metadata: pd.DataFrame) -> tuple[float, float, float]:
+def _lmer_formula(random_slope: bool) -> str:
+    return (
+        "y ~ cond + (1 + cond | subject) + (1 | item)"
+        if random_slope
+        else "y ~ cond + (1 | subject) + (1 | item)"
+    )
+
+
+def _fit_lmer_condition_effect(
+    y: np.ndarray,
+    metadata: pd.DataFrame,
+    random_slope: bool,
+) -> tuple[float, float, float]:
     from lmeeeg.backends.lmm.pymer4_backend import _factor_levels, _resolve_term
 
     import polars as pl
@@ -80,7 +92,7 @@ def _fit_lmer_condition_effect(y: np.ndarray, metadata: pd.DataFrame) -> tuple[f
 
     data = metadata.copy(deep=False)
     data["y"] = y
-    model = lmer("y ~ cond + (1 | subject) + (1 | item)", data=pl.from_pandas(data))
+    model = lmer(_lmer_formula(random_slope), data=pl.from_pandas(data))
     model.set_factors(_factor_levels(data))
     model.fit(summary=False, verbose=False)
     coefs = model.result_fit
@@ -91,7 +103,7 @@ def _fit_lmer_condition_effect(y: np.ndarray, metadata: pd.DataFrame) -> tuple[f
     return float(row["estimate"]), float(row["std_error"]), float(row["p_value"])
 
 
-def test_pymer4_calibration_generator_h0_is_null_at_every_feature() -> None:
+def _assert_generator_h0_is_null_at_every_feature(random_slope: bool, seed_offset: int) -> None:
     _require_pymer4()
     n_draws = int(os.environ.get("LMEEG_NULL_GUARD_N_DRAWS", "200"))
     n_subjects = int(os.environ.get("LMEEG_NULL_GUARD_N_SUBJECTS", "6"))
@@ -103,8 +115,8 @@ def test_pymer4_calibration_generator_h0_is_null_at_every_feature() -> None:
 
     for draw in range(n_draws):
         eeg, metadata = _simulate_null_or_power(
-            seed=70_000 + draw,
-            random_slope=False,
+            seed=seed_offset + draw,
+            random_slope=random_slope,
             fixed_effect=0.0,
             n_subjects=n_subjects,
             n_items=n_items,
@@ -114,6 +126,7 @@ def test_pymer4_calibration_generator_h0_is_null_at_every_feature() -> None:
                 estimate, standard_error, p_value = _fit_lmer_condition_effect(
                     eeg[:, location, time],
                     metadata,
+                    random_slope=random_slope,
                 )
                 estimates[draw, location, time] = estimate
                 standard_errors[draw, location, time] = standard_error
@@ -133,6 +146,14 @@ def test_pymer4_calibration_generator_h0_is_null_at_every_feature() -> None:
             assert abs(rejection_rate - NULL_GUARD_ALPHA) <= rejection_rate_margin
 
 
+def test_pymer4_calibration_generator_h0_is_null_at_every_feature() -> None:
+    _assert_generator_h0_is_null_at_every_feature(random_slope=False, seed_offset=70_000)
+
+
+def test_pymer4_calibration_slope_generator_h0_is_null_at_every_feature() -> None:
+    _assert_generator_h0_is_null_at_every_feature(random_slope=True, seed_offset=80_000)
+
+
 def _run_pipeline_rejects(
     seed: int,
     correction: str,
@@ -150,7 +171,7 @@ def _run_pipeline_rejects(
         n_subjects=n_subjects,
         n_items=n_items,
     )
-    formula = "y ~ cond + (1 + cond | subject) + (1 | item)" if random_slope else "y ~ cond + (1 | subject) + (1 | item)"
+    formula = _lmer_formula(random_slope)
     fit_result = fit_lmm_mass_univariate(
         eeg=eeg,
         metadata=metadata,
@@ -171,7 +192,7 @@ def _run_pipeline_rejects(
     return bool(np.nanmin(inference.corrected_p_values) <= ALPHA)
 
 
-def _estimate_c1_fwer(
+def _estimate_h0_fwer(
     correction: str,
     permutation_scheme: str,
     n_sims: int,
@@ -179,6 +200,8 @@ def _estimate_c1_fwer(
     n_subjects: int,
     n_items: int,
     seed_offset: int,
+    random_slope: bool,
+    label: str,
 ) -> tuple[float, float]:
     progress_every = int(os.environ.get("LMEEG_PROGRESS_EVERY", "0"))
     rejections = []
@@ -186,7 +209,7 @@ def _estimate_c1_fwer(
         rejected = _run_pipeline_rejects(
             seed=seed_offset + sim,
             correction=correction,
-            random_slope=False,
+            random_slope=random_slope,
             fixed_effect=0.0,
             n_permutations=n_permutations,
             permutation_scheme=permutation_scheme,
@@ -197,13 +220,57 @@ def _estimate_c1_fwer(
         if progress_every and ((sim + 1) % progress_every == 0 or sim + 1 == n_sims):
             current = float(np.mean(rejections))
             print(
-                f"PROGRESS C1 size={n_subjects}x{n_items} scheme={permutation_scheme} "
+                f"PROGRESS {label} size={n_subjects}x{n_items} scheme={permutation_scheme} "
                 f"backend={correction} sim={sim + 1}/{n_sims} "
                 f"rejections={int(np.sum(rejections))} fwer={current:.3f}",
                 flush=True,
             )
     fwer = float(np.mean(rejections))
     return fwer, _mc_se(fwer, n_sims)
+
+
+def _estimate_c1_fwer(
+    correction: str,
+    permutation_scheme: str,
+    n_sims: int,
+    n_permutations: int,
+    n_subjects: int,
+    n_items: int,
+    seed_offset: int,
+) -> tuple[float, float]:
+    return _estimate_h0_fwer(
+        correction=correction,
+        permutation_scheme=permutation_scheme,
+        n_sims=n_sims,
+        n_permutations=n_permutations,
+        n_subjects=n_subjects,
+        n_items=n_items,
+        seed_offset=seed_offset,
+        random_slope=False,
+        label="C1",
+    )
+
+
+def _estimate_c2_fwer(
+    correction: str,
+    permutation_scheme: str,
+    n_sims: int,
+    n_permutations: int,
+    n_subjects: int,
+    n_items: int,
+    seed_offset: int,
+) -> tuple[float, float]:
+    return _estimate_h0_fwer(
+        correction=correction,
+        permutation_scheme=permutation_scheme,
+        n_sims=n_sims,
+        n_permutations=n_permutations,
+        n_subjects=n_subjects,
+        n_items=n_items,
+        seed_offset=seed_offset,
+        random_slope=True,
+        label="C2",
+    )
 
 
 @pytest.mark.slow
@@ -248,6 +315,30 @@ def test_pymer4_d3_c1_size_sweep(correction: str, n_subjects: int, n_items: int)
     )
     print(
         f"RESULT D3 size={n_subjects}x{n_items} scheme={permutation_scheme} backend={correction} "
+        f"fwer={fwer:.3f} mc_se={se:.3f} n_sims={n_sims} n_permutations={n_permutations}"
+    )
+    assert 0.0 <= fwer <= 1.0
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("correction", ["maxstat", "cluster", "tfce"])
+@pytest.mark.parametrize(("n_subjects", "n_items"), [(6, 5), (12, 10), (24, 20), (36, 30)])
+def test_pymer4_c2_random_slope_size_sweep(correction: str, n_subjects: int, n_items: int) -> None:
+    _require_pymer4()
+    n_sims = int(os.environ.get("LMEEG_C2_N_SIMS", "300"))
+    n_permutations = int(os.environ.get("LMEEG_C2_N_PERMUTATIONS", "1000"))
+    permutation_scheme = os.environ.get("LMEEG_C2_PERMUTATION_SCHEME", "within_subject")
+    fwer, se = _estimate_c2_fwer(
+        correction=correction,
+        permutation_scheme=permutation_scheme,
+        n_sims=n_sims,
+        n_permutations=n_permutations,
+        n_subjects=n_subjects,
+        n_items=n_items,
+        seed_offset=90_000 + n_subjects * 100 + n_items,
+    )
+    print(
+        f"RESULT C2 size={n_subjects}x{n_items} scheme={permutation_scheme} backend={correction} "
         f"fwer={fwer:.3f} mc_se={se:.3f} n_sims={n_sims} n_permutations={n_permutations}"
     )
     assert 0.0 <= fwer <= 1.0
