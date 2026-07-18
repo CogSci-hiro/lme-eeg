@@ -20,6 +20,15 @@ dependencies = [
 
 [project.optional-dependencies]
 mne = ["mne>=1.5"]
+pymer4 = [
+    "pymer4>=0.9,<0.10",
+    "rpy2>=3.6,<3.7",
+    "polars>=1.0",
+    "pyarrow>=15",
+    "great-tables>=0.17",
+    "scikit-learn>=1.4",
+    "formulae>=0.5",
+]
 docs = [
     "sphinx>=7.2",
     "pydata-sphinx-theme>=0.15",
@@ -43,3 +52,8 @@ addopts = "-m 'not slow'"
 markers = [
     "slow: long-running validation/calibration tests",
 ]
+
+[tool.lmeeeg.pymer4]
+supported_pymer4 = ">=0.9,<0.10"
+verified_r = "4.5.3"
+verified_r_packages = {lme4 = "2.0.1", lmerTest = "3.2.1", emmeans = "2.0.3", report = "0.6.4"}

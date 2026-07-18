@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from importlib import metadata
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,13 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeEl
 
 from lmeeeg.backends.lmm.base import BaseLMMBackend, LMMBackendResult
 from lmeeeg.core.design import DesignSpec
+
+
+SUPPORTED_PYMER4_MAJOR_MINOR = (0, 9)
+PYMER4_INSTALL_MESSAGE = (
+    "Pymer4LMMBackend requires pymer4 0.9.x plus its Python dependencies and an R install "
+    "with lme4/lmerTest. See src/lmeeeg/backends/lmm/VERIFIED.md."
+)
 
 
 class Pymer4LMMBackend(BaseLMMBackend):
@@ -27,6 +35,9 @@ class Pymer4LMMBackend(BaseLMMBackend):
     Calibration envelope and real-EEG go/no-go status are documented in
     ``docs/CALIBRATION.md``.
     """
+
+    def __init__(self) -> None:
+        _check_pymer4_version()
 
     def fit_mass_univariate(
         self,
@@ -44,11 +55,7 @@ class Pymer4LMMBackend(BaseLMMBackend):
             import polars as pl
             from pymer4.models import lmer
         except Exception as import_error:  # pragma: no cover - depends on optional R stack
-            raise ImportError(
-                "Pymer4LMMBackend requires pymer4 plus its Python dependencies and an R install "
-                "with lme4/lmerTest. Install R packages lme4, lmerTest, emmeans, report, then "
-                "install pymer4, rpy2, polars, pyarrow, great-tables, scikit-learn, and formulae."
-            ) from import_error
+            raise ImportError(PYMER4_INSTALL_MESSAGE) from import_error
 
         n_observations, n_locations, n_times = eeg.shape
         n_features = n_locations * n_times
@@ -193,7 +200,30 @@ def _prepare_pymer4_environment() -> None:
             if local not in current.split(os.pathsep):
                 os.environ["R_LIBS_USER"] = os.pathsep.join([local, current])
         else:
-            os.environ["R_LIBS_USER"] = local
+                os.environ["R_LIBS_USER"] = local
+
+
+def _check_pymer4_version() -> None:
+    try:
+        version = metadata.version("pymer4")
+    except metadata.PackageNotFoundError as error:
+        raise ImportError(PYMER4_INSTALL_MESSAGE) from error
+    major_minor = _parse_major_minor(version)
+    if major_minor != SUPPORTED_PYMER4_MAJOR_MINOR:
+        raise ImportError(
+            f"Pymer4LMMBackend is verified only against pymer4 0.9.x; installed pymer4 is {version!r}. "
+            "Accessor names changed across pymer4 releases, so refusing to fit. "
+            "See src/lmeeeg/backends/lmm/VERIFIED.md."
+        )
+
+
+def _parse_major_minor(version: str) -> tuple[int, int]:
+    match = re.match(r"^(\d+)\.(\d+)", version)
+    if match is None:
+        raise ImportError(
+            f"Could not parse pymer4 version {version!r}; see src/lmeeeg/backends/lmm/VERIFIED.md."
+        )
+    return int(match.group(1)), int(match.group(2))
 
 
 def _fit_model(model: Any) -> None:

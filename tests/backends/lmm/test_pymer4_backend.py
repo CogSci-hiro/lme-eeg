@@ -6,7 +6,12 @@ import pandas as pd
 import pytest
 
 from lmeeeg.api.fit import FitConfig, fit_lmm_mass_univariate
-from lmeeeg.backends.lmm.pymer4_backend import Pymer4LMMBackend, _prepare_pymer4_environment, _resolve_term
+from lmeeeg.backends.lmm.pymer4_backend import (
+    Pymer4LMMBackend,
+    _check_pymer4_version,
+    _prepare_pymer4_environment,
+    _resolve_term,
+)
 from lmeeeg.core.design import build_design_spec
 
 
@@ -132,6 +137,17 @@ def test_resolve_term_maps_patsy_names_to_lme4_names() -> None:
     assert _resolve_term("latency", available) == "latency"
     assert _resolve_term("cond[T.b]:latency", available) == "condb:latency"
     assert _resolve_term("missing[T.x]", available) is None
+
+
+def test_pymer4_version_check_accepts_verified_minor(monkeypatch) -> None:
+    monkeypatch.setattr("lmeeeg.backends.lmm.pymer4_backend.metadata.version", lambda package: "0.9.2")
+    _check_pymer4_version()
+
+
+def test_pymer4_version_check_rejects_unverified_minor(monkeypatch) -> None:
+    monkeypatch.setattr("lmeeeg.backends.lmm.pymer4_backend.metadata.version", lambda package: "0.10.0")
+    with pytest.raises(ImportError, match="verified only against pymer4 0.9.x.*VERIFIED.md"):
+        _check_pymer4_version()
 
 
 def test_pymer4_crossed_intercepts_marginal_ols_matches_lme4_fixed_effects() -> None:
