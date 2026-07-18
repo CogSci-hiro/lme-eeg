@@ -31,11 +31,11 @@ def _lmer_formula(random_slope: bool) -> str:
     )
 
 
-def _fit_lmer_condition_t_map(
+def _fit_lmer_condition_stat_maps(
     eeg: np.ndarray,
     metadata: pd.DataFrame,
     random_slope: bool,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     from lmeeeg.backends.lmm.pymer4_backend import _factor_levels, _resolve_term
 
     import polars as pl
@@ -43,6 +43,7 @@ def _fit_lmer_condition_t_map(
 
     n_locations, n_times = eeg.shape[1], eeg.shape[2]
     t_map = np.empty((n_locations, n_times), dtype=float)
+    p_map = np.empty((n_locations, n_times), dtype=float)
     for location in range(n_locations):
         for time in range(n_times):
             data = metadata.copy(deep=False)
@@ -56,6 +57,16 @@ def _fit_lmer_condition_t_map(
                 raise AssertionError(f"Could not resolve cond[T.B] in lmer table {coefs['term'].to_list()!r}.")
             row = coefs.filter(pl.col("term") == term).row(0, named=True)
             t_map[location, time] = float(row["t_stat"])
+            p_map[location, time] = float(row["p_value"])
+    return t_map, p_map
+
+
+def _fit_lmer_condition_t_map(
+    eeg: np.ndarray,
+    metadata: pd.DataFrame,
+    random_slope: bool,
+) -> np.ndarray:
+    t_map, _ = _fit_lmer_condition_stat_maps(eeg=eeg, metadata=metadata, random_slope=random_slope)
     return t_map
 
 
@@ -176,6 +187,42 @@ def _real_lmm_refit_rejections(
     }, elapsed
 
 
+def _estimate_parametric_feature_rates(
+    label: str,
+    random_slope: bool,
+    fixed_effect: float,
+    n_subjects: int,
+    n_items: int,
+    n_sims: int,
+    seed_offset: int,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    progress_every = int(os.environ.get("LMEEG_PROGRESS_EVERY", "0"))
+    p_values = np.empty((n_sims, 2, 2), dtype=float)
+    start = time.perf_counter()
+    for sim in range(n_sims):
+        eeg, metadata = _simulate_null_or_power(
+            seed=seed_offset + sim,
+            random_slope=random_slope,
+            fixed_effect=fixed_effect,
+            n_subjects=n_subjects,
+            n_items=n_items,
+        )
+        _, p_map = _fit_lmer_condition_stat_maps(eeg=eeg, metadata=metadata, random_slope=random_slope)
+        p_values[sim] = p_map
+        if progress_every and ((sim + 1) % progress_every == 0 or sim + 1 == n_sims):
+            rates = np.mean(p_values[: sim + 1] < ALPHA, axis=0)
+            print(
+                f"PROGRESS REAL_LMM_PARAM {label} size={n_subjects}x{n_items} "
+                f"sim={sim + 1}/{n_sims} mean_rate={float(np.mean(rates)):.3f}",
+                flush=True,
+            )
+    return np.mean(p_values < ALPHA, axis=0), p_values, time.perf_counter() - start
+
+
+def _parametric_settings() -> int:
+    return int(os.environ.get("LMEEG_REAL_LMM_PARAMETRIC_N_SIMS", "300"))
+
+
 @pytest.mark.slow
 def test_real_lmm_slope_h0_guard_passes_before_refit_calibration() -> None:
     _assert_generator_h0_is_null_at_every_feature(random_slope=True, seed_offset=80_000)
@@ -190,8 +237,56 @@ def test_real_lmm_slope_h0_guard_passes_before_refit_calibration() -> None:
         ("C3", False, 0.45),
     ],
 )
+@pytest.mark.parametrize(("n_subjects", "n_items"), [(6, 5), (12, 10), (24, 20), (36, 30)])
+def test_real_lmm_parametric_feature_calibration(
+    label: str,
+    random_slope: bool,
+    fixed_effect: float,
+    n_subjects: int,
+    n_items: int,
+) -> None:
+    _require_pymer4()
+    n_sims = _parametric_settings()
+    rates, p_values, elapsed = _estimate_parametric_feature_rates(
+        label=label,
+        random_slope=random_slope,
+        fixed_effect=fixed_effect,
+        n_subjects=n_subjects,
+        n_items=n_items,
+        n_sims=n_sims,
+        seed_offset=130_000 + n_subjects * 1_000 + n_items * 10 + (10_000 if random_slope else 0),
+    )
+    mc_bound = 3.0 * float(np.sqrt(ALPHA * (1.0 - ALPHA) / n_sims))
+    for location in range(rates.shape[0]):
+        for time_index in range(rates.shape[1]):
+            rate = float(rates[location, time_index])
+            print(
+                f"RESULT REAL_LMM_PARAM {label} size={n_subjects}x{n_items} "
+                f"feature={location},{time_index} rate={rate:.3f} "
+                f"mc_bound={mc_bound:.3f} n_sims={n_sims} "
+                f"mean_p={float(np.mean(p_values[:, location, time_index])):.3f} "
+                f"seconds={elapsed:.3f}",
+                flush=True,
+            )
+            if fixed_effect == 0.0:
+                assert abs(rate - ALPHA) <= mc_bound
+            elif n_sims >= 300:
+                assert rate >= ALPHA + 0.10
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("label", "random_slope", "fixed_effect"),
+    [
+        ("C1", False, 0.0),
+        ("C2", True, 0.0),
+        ("C3", False, 0.45),
+    ],
+)
 def test_real_lmm_refit_null_minimal_slice(label: str, random_slope: bool, fixed_effect: float) -> None:
     _require_pymer4()
+    if os.environ.get("LMEEG_RUN_REAL_LMM_REFIT_GRID") != "1":
+        pytest.skip("Set LMEEG_RUN_REAL_LMM_REFIT_GRID=1 for the expensive real-LMM permutation slice.")
     n_sims, n_permutations = _real_lmm_settings()
     progress_every = int(os.environ.get("LMEEG_PROGRESS_EVERY", "0"))
     rejections = {"maxstat": [], "cluster": [], "tfce": []}
