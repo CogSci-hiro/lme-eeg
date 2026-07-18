@@ -321,6 +321,29 @@ def test_pymer4_d3_c1_size_sweep(correction: str, n_subjects: int, n_items: int)
 
 
 @pytest.mark.slow
+def test_pymer4_release_c1_maxstat_regression_guard() -> None:
+    _require_pymer4()
+    n_sims = int(os.environ.get("LMEEG_RELEASE_C1_N_SIMS", "200"))
+    n_permutations = int(os.environ.get("LMEEG_RELEASE_C1_N_PERMUTATIONS", "500"))
+    fwer, se = _estimate_c1_fwer(
+        correction="maxstat",
+        permutation_scheme="within_subject",
+        n_sims=n_sims,
+        n_permutations=n_permutations,
+        n_subjects=6,
+        n_items=5,
+        seed_offset=110_000,
+    )
+    print(
+        f"RESULT RELEASE_C1 size=6x5 scheme=within_subject backend=maxstat "
+        f"fwer={fwer:.3f} mc_se={se:.3f} n_sims={n_sims} n_permutations={n_permutations}"
+    )
+    assert n_sims >= 200
+    assert n_permutations >= 500
+    assert fwer <= 0.08
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize("correction", ["maxstat", "cluster", "tfce"])
 @pytest.mark.parametrize(("n_subjects", "n_items"), [(6, 5), (12, 10), (24, 20), (36, 30)])
 def test_pymer4_c2_random_slope_size_sweep(correction: str, n_subjects: int, n_items: int) -> None:

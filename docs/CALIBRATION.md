@@ -106,6 +106,17 @@ LMEEG_D3_PERMUTATION_SCHEME=within_subject LMEEG_PROGRESS_EVERY=25 \
   -q -m slow -s
 ```
 
+C1 Release 1 regression guard. This test is marked `slow` because it fits real
+pymer4/lme4 models, but it must pass before any Release 1 tag:
+
+```bash
+LMEEG_RELEASE_C1_N_SIMS=200 LMEEG_RELEASE_C1_N_PERMUTATIONS=500 \
+LMEEG_PROGRESS_EVERY=25 \
+  ./.venv/bin/python -m pytest \
+  tests/backends/lmm/test_pymer4_calibration_slow.py::test_pymer4_release_c1_maxstat_regression_guard \
+  -q -m slow -s
+```
+
 C2 random-slope size sweep:
 
 ```bash
