@@ -13,6 +13,7 @@ from tests.backends.lmm.test_pymer4_backend import _require_pymer4
 ALPHA = 0.05
 FWER_MARGIN = 0.03
 SLOPE_FAILURE_LIMIT = 0.08
+NULL_GUARD_ALPHA = 0.05
 
 
 def _calibration_settings() -> tuple[int, int]:
@@ -23,6 +24,10 @@ def _calibration_settings() -> tuple[int, int]:
 
 def _mc_se(p_value: float, n_sims: int) -> float:
     return float(np.sqrt(p_value * (1.0 - p_value) / n_sims))
+
+
+def _condition_effect_shape(location: int, time: int) -> float:
+    return 1.0 + 0.03 * location - 0.02 * time
 
 
 def _simulate_null_or_power(
@@ -57,14 +62,75 @@ def _simulate_null_or_power(
     eeg = np.empty((len(metadata), 2, 2), dtype=float)
     for location in range(2):
         for time in range(2):
-            signal = fixed_effect + 0.03 * location - 0.02 * time
+            beta_feature = fixed_effect * _condition_effect_shape(location, time)
             eeg[:, location, time] = (
                 1.0
-                + signal * cond
+                + beta_feature * cond
                 + random_part
                 + rng.normal(0.0, 0.25, len(metadata))
             )
     return eeg, metadata
+
+
+def _fit_lmer_condition_effect(y: np.ndarray, metadata: pd.DataFrame) -> tuple[float, float, float]:
+    from lmeeeg.backends.lmm.pymer4_backend import _factor_levels, _resolve_term
+
+    import polars as pl
+    from pymer4.models import lmer
+
+    data = metadata.copy(deep=False)
+    data["y"] = y
+    model = lmer("y ~ cond + (1 | subject) + (1 | item)", data=pl.from_pandas(data))
+    model.set_factors(_factor_levels(data))
+    model.fit(summary=False, verbose=False)
+    coefs = model.result_fit
+    term = _resolve_term("cond[T.B]", coefs["term"].to_list())
+    if term is None:
+        raise AssertionError(f"Could not resolve cond[T.B] in lmer table {coefs['term'].to_list()!r}.")
+    row = coefs.filter(pl.col("term") == term).row(0, named=True)
+    return float(row["estimate"]), float(row["std_error"]), float(row["p_value"])
+
+
+def test_pymer4_calibration_generator_h0_is_null_at_every_feature() -> None:
+    _require_pymer4()
+    n_draws = int(os.environ.get("LMEEG_NULL_GUARD_N_DRAWS", "200"))
+    n_subjects = int(os.environ.get("LMEEG_NULL_GUARD_N_SUBJECTS", "6"))
+    n_items = int(os.environ.get("LMEEG_NULL_GUARD_N_ITEMS", "5"))
+    progress_every = int(os.environ.get("LMEEG_PROGRESS_EVERY", "0"))
+    estimates = np.empty((n_draws, 2, 2), dtype=float)
+    standard_errors = np.empty((n_draws, 2, 2), dtype=float)
+    p_values = np.empty((n_draws, 2, 2), dtype=float)
+
+    for draw in range(n_draws):
+        eeg, metadata = _simulate_null_or_power(
+            seed=70_000 + draw,
+            random_slope=False,
+            fixed_effect=0.0,
+            n_subjects=n_subjects,
+            n_items=n_items,
+        )
+        for location in range(2):
+            for time in range(2):
+                estimate, standard_error, p_value = _fit_lmer_condition_effect(
+                    eeg[:, location, time],
+                    metadata,
+                )
+                estimates[draw, location, time] = estimate
+                standard_errors[draw, location, time] = standard_error
+                p_values[draw, location, time] = p_value
+        if progress_every and ((draw + 1) % progress_every == 0 or draw + 1 == n_draws):
+            print(f"PROGRESS NULL_GUARD draw={draw + 1}/{n_draws}", flush=True)
+
+    rejection_rate_margin = 3.0 * np.sqrt(NULL_GUARD_ALPHA * (1.0 - NULL_GUARD_ALPHA) / n_draws)
+    for location in range(2):
+        for time in range(2):
+            feature_estimates = estimates[:, location, time]
+            feature_standard_errors = standard_errors[:, location, time]
+            feature_p_values = p_values[:, location, time]
+            mean_tolerance = 3.0 * float(np.mean(feature_standard_errors)) / np.sqrt(n_draws)
+            rejection_rate = float(np.mean(feature_p_values < NULL_GUARD_ALPHA))
+            assert abs(float(np.mean(feature_estimates))) <= mean_tolerance
+            assert abs(rejection_rate - NULL_GUARD_ALPHA) <= rejection_rate_margin
 
 
 def _run_pipeline_rejects(
@@ -165,7 +231,7 @@ def test_pymer4_d2_c1_scheme_grid(correction: str, permutation_scheme: str) -> N
 
 @pytest.mark.slow
 @pytest.mark.parametrize("correction", ["maxstat", "cluster", "tfce"])
-@pytest.mark.parametrize(("n_subjects", "n_items"), [(12, 10), (24, 20), (36, 30)])
+@pytest.mark.parametrize(("n_subjects", "n_items"), [(6, 5), (12, 10), (24, 20), (36, 30)])
 def test_pymer4_d3_c1_size_sweep(correction: str, n_subjects: int, n_items: int) -> None:
     _require_pymer4()
     n_sims = int(os.environ.get("LMEEG_D3_N_SIMS", "60"))
