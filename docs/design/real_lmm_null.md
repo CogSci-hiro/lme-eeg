@@ -173,3 +173,75 @@ The production API should make the envelope visible:
 Correction backends should consume statistic maps rather than refit models
 themselves. That keeps maxstat, cluster, and TFCE as summaries over a shared
 observed map and shared null-map stream.
+
+## Step 2 Parametric Calibration
+
+Run date: 2026-07-18.
+
+Runtime surface:
+
+- R 4.5.3
+- lme4 2.0.1
+- lmerTest 3.2.1
+- pymer4 0.9.2
+- rpy2 3.6.7
+- `RPY2_CFFI_MODE=ABI`
+- `R_LIBS_USER=.venv/R/library`
+
+The random-slope H0 guard passed before these numbers were trusted:
+
+```text
+test_real_lmm_slope_h0_guard_passes_before_refit_calibration
+1 passed in 378.88 s
+```
+
+The parametric calibration used the lmerTest Satterthwaite p value directly,
+with no permutation multiplier. Each cell used `n_sims=300`, four features, and
+the corrected null generator. The binomial check was
+`0.05 +/- 3 * sqrt(0.05 * 0.95 / 300)`, i.e. `0.05 +/- 0.038`.
+
+Feature order is `(0,0) / (0,1) / (1,0) / (1,1)`.
+
+| Scenario | Size | Feature p<0.05 rates | Verdict |
+| --- | --- | --- | --- |
+| C1 crossed intercept H0 | 6x5 | 0.047 / 0.040 / 0.057 / 0.030 | nominal |
+| C1 crossed intercept H0 | 12x10 | 0.050 / 0.050 / 0.053 / 0.043 | nominal |
+| C1 crossed intercept H0 | 24x20 | 0.057 / 0.053 / 0.057 / 0.080 | nominal, upper-edge feature |
+| C1 crossed intercept H0 | 36x30 | 0.050 / 0.057 / 0.043 / 0.087 | nominal, upper-edge feature |
+| C2 random slope H0 | 6x5 | 0.063 / 0.073 / 0.063 / 0.063 | nominal |
+| C2 random slope H0 | 12x10 | 0.063 / 0.070 / 0.053 / 0.073 | nominal |
+| C2 random slope H0 | 24x20 | 0.047 / 0.057 / 0.040 / 0.053 | nominal |
+| C2 random slope H0 | 36x30 | 0.023 / 0.027 / 0.027 / 0.020 | conservative |
+| C3 fixed effect present | 6x5 | 1.000 / 1.000 / 1.000 / 1.000 | powered |
+| C3 fixed effect present | 12x10 | 1.000 / 1.000 / 1.000 / 1.000 | powered |
+| C3 fixed effect present | 24x20 | 1.000 / 1.000 / 1.000 / 1.000 | powered |
+| C3 fixed effect present | 36x30 | 1.000 / 1.000 / 1.000 / 1.000 | powered |
+
+Primary Step 2 verdict: the lmerTest/Satterthwaite fixed-effect p value is
+calibrated per feature under the random-slope C2 null in this generator. The
+Release 1 slope failure is therefore attributable to the marginal-OLS statistic,
+not to an inherent failure of the fitted mixed model's fixed-effect statistic.
+
+## Step 2B Permutation Slice Status
+
+The requested coarse 12x10 refit-permutation slice was started with
+`n_sims=50`, `n_permutations=100`, `within_subject`, and the shared LMM-t null
+maps summarized by maxstat, cluster, and TFCE. It was interrupted after about
+61 minutes because pymer4/rpy2 made even this "cheap" slice too slow to finish
+comfortably in-session.
+
+Partial C1 progress before interruption:
+
+```text
+C1 25/50: maxstat 0.000, cluster 0.000, tfce 0.040
+```
+
+This partial C1 result is not a completed FWER estimate and must not be used as
+a go/no-go table. It does, however, reinforce the engine feasibility point:
+pymer4 is acceptable for the parametric statistic calibration and small oracle
+checks, but the refit-permutation null needs either a much faster engine or an
+explicitly small ROI/time-window budget.
+
+The engine question remains open for Release 2 production work. MixedModels.jl
+through juliacall remains the recommended candidate for a production-scale
+refit engine, pending its own verified-accessor and calibration pass.
