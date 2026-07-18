@@ -23,6 +23,9 @@ class Pymer4LMMBackend(BaseLMMBackend):
     Public fixed-effect maps are keyed by Patsy column names so they line up with
     ``DesignSpec.fixed_column_names`` and downstream inference validation. Those
     keys are resolved to lme4 coefficient-table rows per fit.
+
+    Calibration envelope and real-EEG go/no-go status are documented in
+    ``docs/CALIBRATION.md``.
     """
 
     def fit_mass_univariate(
