@@ -11,9 +11,9 @@ Minimal Python package implementing the core lmeEEG workflow for epoched M/EEG/s
 4. run fast mass-univariate OLS on the marginalized data,
 5. perform max-stat, cluster, or TFCE correction.
 
-Validation status: the fast marginal-OLS path is calibrated for crossed random
-intercepts under `within_subject` permutation, but not for random slopes; see
-[docs/CALIBRATION.md](docs/CALIBRATION.md).
+Validation status: Release 1 validates the fast marginal-OLS path for crossed
+random intercepts under `within_subject` permutation. Random slopes are refused
+pending the real-LMM path; see [docs/CALIBRATION.md](docs/CALIBRATION.md).
 
 ## Current scope
 

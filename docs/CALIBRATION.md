@@ -93,9 +93,9 @@ pipeline is not passing only by never rejecting.
 
 ## Validated Envelope
 
-Fast marginal-OLS path: VALID for crossed random intercepts under
-`within_subject` permutation. INVALID for random slopes; use the real-LMM path,
-which is not yet built.
+Release 1 validates the fast marginal-OLS path for crossed random intercepts
+under `within_subject` permutation. Random slopes are INVALID on the fast path
+and are refused pending the real-LMM path, which is not yet built.
 
 ## Reproduce
 
