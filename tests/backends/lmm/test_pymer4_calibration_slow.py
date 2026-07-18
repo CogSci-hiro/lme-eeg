@@ -416,17 +416,31 @@ def test_pymer4_calibration_c2_random_slope_h0_fwer_report(correction: str) -> N
 def test_pymer4_calibration_c3_power_sanity(correction: str) -> None:
     _require_pymer4()
     n_sims, n_permutations = _calibration_settings()
-    rejections = [
-        _run_pipeline_rejects(
+    progress_every = int(os.environ.get("LMEEG_PROGRESS_EVERY", "0"))
+    rejections = []
+    for sim in range(n_sims):
+        rejected = _run_pipeline_rejects(
             seed=30_000 + sim,
             correction=correction,
             random_slope=False,
             fixed_effect=0.45,
             n_permutations=n_permutations,
+            permutation_scheme="within_subject",
         )
-        for sim in range(n_sims)
-    ]
+        rejections.append(rejected)
+        if progress_every and ((sim + 1) % progress_every == 0 or sim + 1 == n_sims):
+            current = float(np.mean(rejections))
+            print(
+                f"PROGRESS C3 size=6x5 scheme=within_subject backend={correction} "
+                f"sim={sim + 1}/{n_sims} detections={int(np.sum(rejections))} power={current:.3f}",
+                flush=True,
+            )
     power = float(np.mean(rejections))
+    print(
+        f"RESULT C3 size=6x5 scheme=within_subject backend={correction} "
+        f"power={power:.3f} mc_se={_mc_se(power, n_sims):.3f} "
+        f"n_sims={n_sims} n_permutations={n_permutations}"
+    )
     if n_sims < 20:
         assert 0.0 <= power <= 1.0
         return

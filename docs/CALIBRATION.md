@@ -76,6 +76,21 @@ found. The correction backends agree, so this is not a maxstat/cluster/TFCE
 scheme-specific artifact. The cause is the statistic: OLS t-values on
 marginalized data ignore subject-varying slope variance.
 
+## C3: Power Sanity
+
+Scenario: crossed subject/item random intercepts with a true fixed condition
+effect present on the corrected generator. Formula fitted by lme4:
+`y ~ cond + (1 | subject) + (1 | item)`.
+
+Detection rate +/- MC SE:
+
+| Size | maxstat | cluster | tfce |
+| --- | ---: | ---: | ---: |
+| 6x5 | 1.000 +/- 0.000 | 1.000 +/- 0.000 | 1.000 +/- 0.000 |
+
+Verdict: power sanity passes on the corrected generator; the calibrated C1
+pipeline is not passing only by never rejecting.
+
 ## Validated Envelope
 
 Fast marginal-OLS path: VALID for crossed random intercepts under
@@ -124,5 +139,15 @@ LMEEG_C2_N_SIMS=300 LMEEG_C2_N_PERMUTATIONS=1000 \
 LMEEG_C2_PERMUTATION_SCHEME=within_subject LMEEG_PROGRESS_EVERY=25 \
   ./.venv/bin/python -m pytest \
   tests/backends/lmm/test_pymer4_calibration_slow.py::test_pymer4_c2_random_slope_size_sweep \
+  -q -m slow -s
+```
+
+C3 power sanity:
+
+```bash
+LMEEG_CALIBRATION_N_SIMS=300 LMEEG_CALIBRATION_N_PERMUTATIONS=1000 \
+LMEEG_PROGRESS_EVERY=25 \
+  ./.venv/bin/python -m pytest \
+  tests/backends/lmm/test_pymer4_calibration_slow.py::test_pymer4_calibration_c3_power_sanity \
   -q -m slow -s
 ```
