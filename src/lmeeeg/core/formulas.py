@@ -3,6 +3,19 @@ from dataclasses import dataclass
 
 
 @dataclass(slots=True)
+class RandomEffectTerm:
+    """Structured lme4 random-effect term."""
+
+    expression: str
+    group_variable: str
+
+    @property
+    def has_random_slope(self) -> bool:
+        pieces = [piece.strip() for piece in _split_top_level_plus(self.expression)]
+        return any(piece not in {"1", ""} for piece in pieces)
+
+
+@dataclass(slots=True)
 class ParsedFormula:
     """Parsed mixed-model style formula.
 
@@ -16,11 +29,14 @@ class ParsedFormula:
         path lowers this into a random-intercept design.
     original_formula : str
         Original formula string.
+    random_effects : tuple[RandomEffectTerm, ...]
+        Structured random-effect terms in formula order.
     """
 
     fixed_formula: str
     group_variable: str
     original_formula: str
+    random_effects: tuple[RandomEffectTerm, ...]
 
 
 # ==============================
@@ -64,11 +80,13 @@ def parse_mixed_formula(formula: str) -> ParsedFormula:
 
     fixed_terms = [term for term in terms if not _is_random_effect_term(term)]
     fixed_rhs = " + ".join(fixed_terms) if fixed_terms else "1"
-    group_variable = _extract_group_variable(random_terms[0])
+    parsed_random_terms = tuple(_parse_random_effect_term(term) for term in random_terms)
+    group_variable = parsed_random_terms[0].group_variable
     return ParsedFormula(
         fixed_formula=f"y ~ {fixed_rhs}",
         group_variable=group_variable,
         original_formula=original_formula,
+        random_effects=parsed_random_terms,
     )
 
 
@@ -101,7 +119,15 @@ def _is_random_effect_term(term: str) -> bool:
 
 
 def _extract_group_variable(random_term: str) -> str:
-    match = re.fullmatch(r"\(.+\|\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)", random_term.strip())
+    return _parse_random_effect_term(random_term).group_variable
+
+
+def _parse_random_effect_term(random_term: str) -> RandomEffectTerm:
+    match = re.fullmatch(r"\((.+)\|\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)", random_term.strip())
     if match is None:
         raise ValueError(f"Could not parse grouping variable from random-effect term: {random_term}")
-    return match.group(1)
+    expression, group_variable = match.groups()
+    return RandomEffectTerm(
+        expression=expression.strip(),
+        group_variable=group_variable,
+    )

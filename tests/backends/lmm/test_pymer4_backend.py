@@ -141,16 +141,18 @@ def test_pymer4_crossed_intercepts_marginal_ols_matches_lme4_fixed_effects() -> 
     _assert_marginal_ols_matches_lmer(eeg, metadata, "y ~ cond + (1 | subject) + (1 | item)")
 
 
-def test_pymer4_random_slope_marginal_ols_matches_lme4_fixed_effects() -> None:
+def test_pymer4_random_slope_fast_path_is_refused() -> None:
     _require_pymer4()
     eeg, metadata = _simulate_crossed_dataset(random_slope=True, crossed_item=False, seed=42)
-    _assert_marginal_ols_matches_lmer(eeg, metadata, "y ~ cond + (1 + cond | subject)")
+    with pytest.raises(ValueError, match="Random slopes are uncalibrated.*CALIBRATION.md"):
+        _assert_marginal_ols_matches_lmer(eeg, metadata, "y ~ cond + (1 + cond | subject)")
 
 
-def test_pymer4_crossed_random_slope_marginal_ols_matches_lme4_fixed_effects() -> None:
+def test_pymer4_crossed_random_slope_fast_path_is_refused() -> None:
     _require_pymer4()
     eeg, metadata = _simulate_crossed_dataset(random_slope=True, crossed_item=True, seed=43)
-    _assert_marginal_ols_matches_lmer(eeg, metadata, "y ~ cond + (1 + cond | subject) + (1 | item)")
+    with pytest.raises(ValueError, match="Random slopes are uncalibrated.*CALIBRATION.md"):
+        _assert_marginal_ols_matches_lmer(eeg, metadata, "y ~ cond + (1 + cond | subject) + (1 | item)")
 
 
 def test_pymer4_fixed_effect_t_and_se_maps_are_finite() -> None:

@@ -137,6 +137,16 @@ def _fit_lmm_backend(
     return lmm_backend.fit_mass_univariate(**kwargs)
 
 
+def _raise_if_random_slopes_on_fast_path(design_spec) -> None:
+    if not any(term.has_random_slope for term in design_spec.parsed_formula.random_effects):
+        return
+    raise ValueError(
+        "Random slopes are uncalibrated on the fast marginal-OLS path "
+        "(C2 FWER ~0.66-0.86; see docs/CALIBRATION.md). "
+        "Use the real-LMM inference path instead; it is not yet built."
+    )
+
+
 # ==============================
 # Public fit entry point
 # ==============================
@@ -191,6 +201,7 @@ def fit_lmm_mass_univariate(
         variable_types=variable_types,
         fit_intercept=fit_intercept,
     )
+    _raise_if_random_slopes_on_fast_path(design_spec)
 
     if config.lmm_backend_name == "statsmodels":
         lmm_backend = StatsModelsLMMBackend()
