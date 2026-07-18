@@ -165,13 +165,15 @@ def _real_lmm_refit_rejections(
     random_slope: bool,
     fixed_effect: float,
     n_permutations: int,
+    n_subjects: int,
+    n_items: int,
 ) -> tuple[dict[str, bool], float]:
     eeg, metadata = _simulate_null_or_power(
         seed=seed,
         random_slope=random_slope,
         fixed_effect=fixed_effect,
-        n_subjects=6,
-        n_items=5,
+        n_subjects=n_subjects,
+        n_items=n_items,
     )
     observed_t, null_t, elapsed = _real_lmm_t_null_maps(
         eeg=eeg,
@@ -288,6 +290,8 @@ def test_real_lmm_refit_null_minimal_slice(label: str, random_slope: bool, fixed
     if os.environ.get("LMEEG_RUN_REAL_LMM_REFIT_GRID") != "1":
         pytest.skip("Set LMEEG_RUN_REAL_LMM_REFIT_GRID=1 for the expensive real-LMM permutation slice.")
     n_sims, n_permutations = _real_lmm_settings()
+    n_subjects = int(os.environ.get("LMEEG_REAL_LMM_REFIT_N_SUBJECTS", "12"))
+    n_items = int(os.environ.get("LMEEG_REAL_LMM_REFIT_N_ITEMS", "10"))
     progress_every = int(os.environ.get("LMEEG_PROGRESS_EVERY", "0"))
     rejections = {"maxstat": [], "cluster": [], "tfce": []}
     elapsed_seconds = []
@@ -297,6 +301,8 @@ def test_real_lmm_refit_null_minimal_slice(label: str, random_slope: bool, fixed
             random_slope=random_slope,
             fixed_effect=fixed_effect,
             n_permutations=n_permutations,
+            n_subjects=n_subjects,
+            n_items=n_items,
         )
         elapsed_seconds.append(elapsed)
         for backend, rejected in sim_rejections.items():
@@ -307,7 +313,7 @@ def test_real_lmm_refit_null_minimal_slice(label: str, random_slope: bool, fixed
             )
             print(
                 f"PROGRESS REAL_LMM {label} sim={sim + 1}/{n_sims} "
-                f"n_permutations={n_permutations} {summary}",
+                f"size={n_subjects}x{n_items} n_permutations={n_permutations} {summary}",
                 flush=True,
             )
 
@@ -316,7 +322,7 @@ def test_real_lmm_refit_null_minimal_slice(label: str, random_slope: bool, fixed
         se = _mc_se(rate, n_sims)
         print(
             f"RESULT REAL_LMM {label} backend={backend} rate={rate:.3f} mc_se={se:.3f} "
-            f"n_sims={n_sims} n_permutations={n_permutations} "
+            f"size={n_subjects}x{n_items} n_sims={n_sims} n_permutations={n_permutations} "
             f"mean_seconds_per_sim={float(np.mean(elapsed_seconds)):.3f}",
             flush=True,
         )
