@@ -245,3 +245,65 @@ explicitly small ROI/time-window budget.
 The engine question remains open for Release 2 production work. MixedModels.jl
 through juliacall remains the recommended candidate for a production-scale
 refit engine, pending its own verified-accessor and calibration pass.
+
+## Step 3 Fixed-Theta Permutation TFCE Design
+
+Release 2 step 3 tests a cheaper permutation null for the real-LMM random-slope
+path. This is still calibration-scale only; it is not a production backend.
+
+Per feature:
+
+1. Fit the lme4/lmerTest model once through pymer4.
+2. Extract the observed lmerTest condition t statistic.
+3. Extract the fitted covariance surface from lme4:
+   - `X = getME(model, "X")`
+   - `Z = getME(model, "Z")`
+   - `Lambda = getME(model, "Lambda")`
+   - `sigma = result_fit_stats["sigma"]`
+4. Form the fixed plug-in covariance
+   `V = sigma^2 * (Z Lambda Lambda' Z' + I)`.
+5. Factor the covariance once per feature.
+6. For each within-subject permutation, rebuild only the fixed-effect design
+   `X_perm` for the permuted condition labels and recompute the GLS condition
+   estimate, standard error, and t statistic using the fixed factorization of
+   `V`.
+7. Apply maxstat, cluster, and TFCE summaries to the resulting permuted t maps.
+
+The implementation must verify oracle agreement before calibration: the
+observed fixed-theta GLS t map using the lme4 covariance must match the pymer4
+lmerTest t map on a tiny grid. A mismatch means the plug-in linear algebra is
+wrong and calibration numbers are not meaningful.
+
+Approximation:
+
+- The variance components and residual variance are nuisance parameters held
+  fixed at their observed estimates, `theta_hat`, across permutations.
+- This is justified only as a calibrated approximation. Step 2 showed the
+  lmerTest/Satterthwaite fixed-effect statistic is calibrated per feature under
+  the random-slope null, but Step 3 must still test whether the fixed-theta
+  permutation family-wise null is calibrated.
+- The permutation loop does not call lme4/rpy2 and does not refit variance
+  components.
+- The random-slope coding is inherited from lme4's observed design. In the
+  verified pymer4/lme4 surface, the fixed condition column is treatment-coded
+  (`condB`) while the random slope uses polynomial factor coding (`cond.L`).
+  Because `V` is fixed and factored once, the calibration slice keeps the
+  observed random-effect covariance design inside `V` and permutes the tested
+  fixed-effect design. This is the fixed-theta approximation being validated.
+
+Alternative not taken:
+
+- A Freedman-Lane residual permutation variant could avoid permuting the tested
+  design directly, but its mixed-model exchangeability assumptions under
+  crossed random slopes would need a separate derivation and calibration. It is
+  not used for this step.
+
+Scaling:
+
+- At calibration scale, dense covariance algebra or equivalent dense Woodbury
+  solves are acceptable.
+- Crossed subject/item effects make the marginal covariance dense: observations
+  sharing an item but belonging to different subjects are coupled, and random
+  slopes add condition-dependent subject covariance.
+- Production sparse/block scaling is deferred. Step 3 should not build sparse
+  `V`, a Julia engine, or any real-map production path.
