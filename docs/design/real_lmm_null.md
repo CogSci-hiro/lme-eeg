@@ -307,3 +307,60 @@ Scaling:
   slopes add condition-dependent subject covariance.
 - Production sparse/block scaling is deferred. Step 3 should not build sparse
   `V`, a Julia engine, or any real-map production path.
+
+## Step 3 Fixed-Theta Calibration Result
+
+Run date: 2026-07-19.
+
+The slope H0 guard passed before fixed-theta FWER calibration:
+
+```text
+test_real_lmm_slope_h0_guard_passes_before_refit_calibration
+1 passed in 281.83 s
+```
+
+Oracle agreement passed on a 12x10, four-feature grid:
+
+| Model | max abs difference between fixed-theta GLS t and lmerTest t |
+| --- | --- |
+| Crossed intercepts | 2.83107e-14 |
+| Random slope | 2.44471e-13 |
+
+This confirms the plug-in covariance GLS machinery reproduces the observed
+lmerTest t statistic when evaluated at lme4's fitted covariance surface.
+
+Fixed-theta permutation calibration was then run for C2 first, because C2 is the
+primary slope go/no-go. Settings:
+
+- `within_subject`
+- `n_sims=300`
+- `n_permutations=500`
+- four features
+- maxstat, cluster, and TFCE summaries from the shared fixed-theta LMM t null
+
+The first completed C2 cell failed:
+
+| Scenario | Size | Backend | FWER | MC SE | Mean seconds / sim | Max oracle diff |
+| --- | --- | --- | --- | --- | --- | --- |
+| C2 random slope H0 | 6x5 | maxstat | 0.123 | 0.019 | 1.792 | 3.44835e-13 |
+| C2 random slope H0 | 6x5 | cluster | 0.130 | 0.019 | 1.792 | 3.44835e-13 |
+| C2 random slope H0 | 6x5 | TFCE | 0.220 | 0.024 | 1.792 | 3.44835e-13 |
+
+The run was stopped after this failed C2 cell, per the stop condition. Pytest had
+already started the next C2 size before interruption; the partial 12x10
+checkpoint at 50/300 was:
+
+```text
+C2 12x10, 50/300: maxstat 0.040, cluster 0.100, TFCE 0.180
+```
+
+The 12x10 checkpoint is not a completed FWER estimate, but it is directionally
+consistent with the 6x5 failure for cluster/TFCE.
+
+Step 3 verdict: fixed-theta permutation does not calibrate the random-slope C2
+family-wise null in this harness. The observed statistic is correct, but holding
+`V(theta_hat)` fixed while permuting the tested fixed-effect design yields an
+inflated permutation null, especially for TFCE. Do not build a production
+fixed-theta permutation backend from this approximation. The next design step
+should reconsider the null scheme, with candidates including a properly derived
+mixed-model residual permutation or a faster full-refit engine.

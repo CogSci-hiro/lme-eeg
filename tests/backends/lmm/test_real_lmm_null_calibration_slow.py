@@ -537,6 +537,7 @@ def test_fixed_theta_permutation_tfce_calibration(
                 flush=True,
             )
 
+    failed_backends = []
     for backend, values in rejections.items():
         rate = float(np.mean(values))
         se = _mc_se(rate, n_sims)
@@ -551,9 +552,12 @@ def test_fixed_theta_permutation_tfce_calibration(
         assert float(np.max(oracle_diffs)) <= 1e-8
         if n_sims >= 300 and n_permutations >= 500:
             if fixed_effect == 0.0:
-                assert rate <= ALPHA + 0.03
+                if rate > ALPHA + 0.03:
+                    failed_backends.append((backend, rate))
             else:
-                assert rate >= ALPHA + 0.10
+                if rate < ALPHA + 0.10:
+                    failed_backends.append((backend, rate))
+    assert not failed_backends, f"Fixed-theta calibration failed for {label}: {failed_backends!r}"
 
 
 @pytest.mark.slow
