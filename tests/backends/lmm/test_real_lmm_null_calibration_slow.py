@@ -1,5 +1,6 @@
 import os
 import time
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -225,6 +226,196 @@ def _parametric_settings() -> int:
     return int(os.environ.get("LMEEG_REAL_LMM_PARAMETRIC_N_SIMS", "300"))
 
 
+@dataclass(frozen=True)
+class _FixedThetaFeature:
+    y: np.ndarray
+    random_effect_design_factor: np.ndarray
+    covariance_cholesky: np.ndarray
+    sigma: float
+    observed_lmer_t: float
+    observed_gls_t: float
+
+
+def _fixed_theta_settings() -> tuple[int, int]:
+    n_sims = int(os.environ.get("LMEEG_FIXED_THETA_N_SIMS", "300"))
+    n_permutations = int(os.environ.get("LMEEG_FIXED_THETA_N_PERMUTATIONS", "500"))
+    return n_sims, n_permutations
+
+
+def _condition_fixed_design(condition: np.ndarray) -> np.ndarray:
+    condition = np.asarray(condition).astype(str)
+    return np.column_stack([np.ones(condition.shape[0], dtype=float), (condition == "B").astype(float)])
+
+
+def _fixed_theta_solve(feature: _FixedThetaFeature, values: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    was_1d = values.ndim == 1
+    if was_1d:
+        values = values[:, None]
+    random_factor = feature.random_effect_design_factor
+    projected = random_factor.T @ values
+    correction = np.linalg.solve(
+        feature.covariance_cholesky.T,
+        np.linalg.solve(feature.covariance_cholesky, projected),
+    )
+    solved = (values - random_factor @ correction) / (feature.sigma ** 2)
+    return solved[:, 0] if was_1d else solved
+
+
+def _fixed_theta_condition_t(feature: _FixedThetaFeature, fixed_design: np.ndarray) -> float:
+    fixed_design = np.asarray(fixed_design, dtype=float)
+    v_inv_x = _fixed_theta_solve(feature, fixed_design)
+    v_inv_y = _fixed_theta_solve(feature, feature.y)
+    xt_vinv_x = fixed_design.T @ v_inv_x
+    covariance = np.linalg.inv(xt_vinv_x)
+    beta = covariance @ (fixed_design.T @ v_inv_y)
+    standard_error = float(np.sqrt(covariance[1, 1]))
+    return float(beta[1] / standard_error)
+
+
+def _fit_fixed_theta_feature(
+    y: np.ndarray,
+    metadata: pd.DataFrame,
+    random_slope: bool,
+) -> _FixedThetaFeature:
+    from lmeeeg.backends.lmm.pymer4_backend import _factor_levels, _resolve_term
+
+    import polars as pl
+    import rpy2.robjects as ro
+    from pymer4.models import lmer
+
+    data = metadata.copy(deep=False)
+    data["y"] = y
+    model = lmer(_lmer_formula(random_slope), data=pl.from_pandas(data))
+    model.set_factors(_factor_levels(data))
+    model.fit(summary=False, verbose=False)
+    coefs = model.result_fit
+    term = _resolve_term("cond[T.B]", coefs["term"].to_list())
+    if term is None:
+        raise AssertionError(f"Could not resolve cond[T.B] in lmer table {coefs['term'].to_list()!r}.")
+    row = coefs.filter(pl.col("term") == term).row(0, named=True)
+
+    get_me = ro.r["getME"]
+    as_matrix = ro.r["as.matrix"]
+    x_matrix = np.asarray(get_me(model.r_model, "X"), dtype=float)
+    z_matrix = np.asarray(as_matrix(get_me(model.r_model, "Z")), dtype=float)
+    lambda_matrix = np.asarray(as_matrix(get_me(model.r_model, "Lambda")), dtype=float)
+    sigma = float(model.result_fit_stats["sigma"][0])
+    random_effect_design_factor = z_matrix @ lambda_matrix
+    covariance_cholesky = np.linalg.cholesky(
+        np.eye(random_effect_design_factor.shape[1], dtype=float)
+        + random_effect_design_factor.T @ random_effect_design_factor
+    )
+    observed_lmer_t = float(row["t_stat"])
+    placeholder = _FixedThetaFeature(
+        y=np.asarray(y, dtype=float),
+        random_effect_design_factor=random_effect_design_factor,
+        covariance_cholesky=covariance_cholesky,
+        sigma=sigma,
+        observed_lmer_t=observed_lmer_t,
+        observed_gls_t=np.nan,
+    )
+    observed_gls_t = _fixed_theta_condition_t(placeholder, x_matrix)
+    return _FixedThetaFeature(
+        y=placeholder.y,
+        random_effect_design_factor=random_effect_design_factor,
+        covariance_cholesky=covariance_cholesky,
+        sigma=sigma,
+        observed_lmer_t=observed_lmer_t,
+        observed_gls_t=observed_gls_t,
+    )
+
+
+def _fit_fixed_theta_map(
+    eeg: np.ndarray,
+    metadata: pd.DataFrame,
+    random_slope: bool,
+) -> tuple[np.ndarray, np.ndarray, list[list[_FixedThetaFeature]]]:
+    n_locations, n_times = eeg.shape[1], eeg.shape[2]
+    lmer_t = np.empty((n_locations, n_times), dtype=float)
+    gls_t = np.empty((n_locations, n_times), dtype=float)
+    features: list[list[_FixedThetaFeature]] = []
+    for location in range(n_locations):
+        row_features = []
+        for time_index in range(n_times):
+            feature = _fit_fixed_theta_feature(
+                y=eeg[:, location, time_index],
+                metadata=metadata,
+                random_slope=random_slope,
+            )
+            lmer_t[location, time_index] = feature.observed_lmer_t
+            gls_t[location, time_index] = feature.observed_gls_t
+            row_features.append(feature)
+        features.append(row_features)
+    return lmer_t, gls_t, features
+
+
+def _permuted_condition_values_within_subject(
+    metadata: pd.DataFrame,
+    rng: np.random.Generator | np.random.RandomState,
+) -> np.ndarray:
+    condition = metadata["cond"].astype(str).to_numpy(copy=True)
+    group_codes = pd.Categorical(metadata["subject"]).codes
+    for group_code in np.unique(group_codes):
+        group_indices = np.flatnonzero(group_codes == group_code)
+        if group_indices.size > 1:
+            condition[group_indices] = condition[group_indices[rng.permutation(group_indices.size)]]
+    return condition
+
+
+def _fixed_theta_null_maps(
+    features: list[list[_FixedThetaFeature]],
+    metadata: pd.DataFrame,
+    n_permutations: int,
+    seed: int,
+) -> np.ndarray:
+    rng = make_permutation_rng(seed)
+    n_locations = len(features)
+    n_times = len(features[0])
+    null_t = np.empty((n_permutations, n_locations, n_times), dtype=float)
+    for permutation_index in range(n_permutations):
+        permuted_condition = _permuted_condition_values_within_subject(metadata=metadata, rng=rng)
+        fixed_design = _condition_fixed_design(permuted_condition)
+        for location in range(n_locations):
+            for time_index in range(n_times):
+                null_t[permutation_index, location, time_index] = _fixed_theta_condition_t(
+                    features[location][time_index],
+                    fixed_design,
+                )
+    return null_t
+
+
+def _fixed_theta_rejections(
+    seed: int,
+    random_slope: bool,
+    fixed_effect: float,
+    n_subjects: int,
+    n_items: int,
+    n_permutations: int,
+) -> tuple[dict[str, bool], float, float]:
+    eeg, metadata = _simulate_null_or_power(
+        seed=seed,
+        random_slope=random_slope,
+        fixed_effect=fixed_effect,
+        n_subjects=n_subjects,
+        n_items=n_items,
+    )
+    start = time.perf_counter()
+    lmer_t, gls_t, features = _fit_fixed_theta_map(eeg=eeg, metadata=metadata, random_slope=random_slope)
+    oracle_max_abs_diff = float(np.max(np.abs(lmer_t - gls_t)))
+    null_t = _fixed_theta_null_maps(
+        features=features,
+        metadata=metadata,
+        n_permutations=n_permutations,
+        seed=seed + 900_000,
+    )
+    return {
+        "maxstat": _maxstat_rejects(gls_t, null_t),
+        "cluster": _cluster_rejects(gls_t, null_t),
+        "tfce": _tfce_rejects(gls_t, null_t),
+    }, time.perf_counter() - start, oracle_max_abs_diff
+
+
 @pytest.mark.slow
 def test_real_lmm_slope_h0_guard_passes_before_refit_calibration() -> None:
     _assert_generator_h0_is_null_at_every_feature(random_slope=True, seed_offset=80_000)
@@ -273,6 +464,95 @@ def test_real_lmm_parametric_feature_calibration(
             if fixed_effect == 0.0:
                 assert abs(rate - ALPHA) <= mc_bound
             elif n_sims >= 300:
+                assert rate >= ALPHA + 0.10
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("random_slope", [False, True])
+def test_fixed_theta_gls_observed_t_matches_lmer_oracle(random_slope: bool) -> None:
+    _require_pymer4()
+    eeg, metadata = _simulate_null_or_power(
+        seed=150_000 + int(random_slope),
+        random_slope=random_slope,
+        fixed_effect=0.0,
+        n_subjects=12,
+        n_items=10,
+    )
+    lmer_t, gls_t, _ = _fit_fixed_theta_map(eeg=eeg, metadata=metadata, random_slope=random_slope)
+    max_abs_diff = float(np.max(np.abs(lmer_t - gls_t)))
+    print(
+        f"RESULT FIXED_THETA_ORACLE random_slope={random_slope} "
+        f"max_abs_diff={max_abs_diff:.6g}",
+        flush=True,
+    )
+    assert np.allclose(gls_t, lmer_t, rtol=1e-9, atol=1e-9)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("label", "random_slope", "fixed_effect"),
+    [
+        ("C1", False, 0.0),
+        ("C2", True, 0.0),
+        ("C3", True, 0.45),
+    ],
+)
+@pytest.mark.parametrize(("n_subjects", "n_items"), [(6, 5), (12, 10), (24, 20), (36, 30)])
+def test_fixed_theta_permutation_tfce_calibration(
+    label: str,
+    random_slope: bool,
+    fixed_effect: float,
+    n_subjects: int,
+    n_items: int,
+) -> None:
+    _require_pymer4()
+    if os.environ.get("LMEEG_RUN_FIXED_THETA_GRID") != "1":
+        pytest.skip("Set LMEEG_RUN_FIXED_THETA_GRID=1 for the fixed-theta permutation calibration grid.")
+    n_sims, n_permutations = _fixed_theta_settings()
+    progress_every = int(os.environ.get("LMEEG_PROGRESS_EVERY", "0"))
+    rejections = {"maxstat": [], "cluster": [], "tfce": []}
+    elapsed_seconds = []
+    oracle_diffs = []
+    for sim in range(n_sims):
+        sim_rejections, elapsed, oracle_diff = _fixed_theta_rejections(
+            seed=160_000 + n_subjects * 1_000 + n_items * 10 + sim + (10_000 if random_slope else 0),
+            random_slope=random_slope,
+            fixed_effect=fixed_effect,
+            n_subjects=n_subjects,
+            n_items=n_items,
+            n_permutations=n_permutations,
+        )
+        elapsed_seconds.append(elapsed)
+        oracle_diffs.append(oracle_diff)
+        for backend, rejected in sim_rejections.items():
+            rejections[backend].append(rejected)
+        if progress_every and ((sim + 1) % progress_every == 0 or sim + 1 == n_sims):
+            summary = " ".join(
+                f"{backend}={float(np.mean(values)):.3f}" for backend, values in rejections.items()
+            )
+            print(
+                f"PROGRESS FIXED_THETA {label} size={n_subjects}x{n_items} "
+                f"sim={sim + 1}/{n_sims} n_permutations={n_permutations} {summary} "
+                f"max_oracle_diff={float(np.max(oracle_diffs)):.3g}",
+                flush=True,
+            )
+
+    for backend, values in rejections.items():
+        rate = float(np.mean(values))
+        se = _mc_se(rate, n_sims)
+        print(
+            f"RESULT FIXED_THETA {label} size={n_subjects}x{n_items} backend={backend} "
+            f"rate={rate:.3f} mc_se={se:.3f} n_sims={n_sims} "
+            f"n_permutations={n_permutations} mean_seconds_per_sim={float(np.mean(elapsed_seconds)):.3f} "
+            f"max_oracle_diff={float(np.max(oracle_diffs)):.6g}",
+            flush=True,
+        )
+        assert 0.0 <= rate <= 1.0
+        assert float(np.max(oracle_diffs)) <= 1e-8
+        if n_sims >= 300 and n_permutations >= 500:
+            if fixed_effect == 0.0:
+                assert rate <= ALPHA + 0.03
+            else:
                 assert rate >= ALPHA + 0.10
 
 
