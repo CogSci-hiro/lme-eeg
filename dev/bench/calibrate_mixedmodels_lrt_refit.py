@@ -74,6 +74,12 @@ class SimResult:
     observed_total_fits: int
     permuted_singular_fits: int
     permuted_total_fits: int
+    observed_convergence_refit_maps: int
+    observed_total_maps: int
+    observed_unresolved_negative_maps: int
+    permuted_convergence_refit_maps: int
+    permuted_total_maps: int
+    permuted_unresolved_negative_maps: int
     elapsed_seconds: float
 
 
@@ -89,9 +95,22 @@ class CellSummary:
     n_permutations: int
     observed_singular_fraction: float
     permuted_singular_fraction: float
+    observed_convergence_refit_fraction: float
+    permuted_convergence_refit_fraction: float
+    observed_unresolved_negative_maps: int
+    permuted_unresolved_negative_maps: int
     mean_seconds_per_sim: float
     total_seconds: float
     complete: bool
+
+
+@dataclass(frozen=True)
+class _MapFitResult:
+    statistic_map: np.ndarray
+    singular_count: int
+    total_count: int
+    convergence_refit_triggered: bool
+    unresolved_negative: bool
 
 
 def _load_julia_lrt() -> Any:
@@ -125,12 +144,79 @@ def _load_julia_lrt() -> Any:
                 @formula(y ~ 1 + (1 | subject) + (1 | item))
         end
 
-        function lmeeeg_condition_lrt_and_singular(y, cond, subject, item, random_slope)
+        function lmeeeg_lrt_fit_model(formula, df, optimizer, initial_scale)
+            model = LinearMixedModel(formula, df)
+            model.optsum.ftol_rel = 1.0e-14
+            model.optsum.ftol_abs = 1.0e-10
+            model.optsum.xtol_rel = 0.0
+            model.optsum.xtol_abs = fill(1.0e-12, length(model.optsum.initial))
+            model.optsum.maxfeval = 10_000
+            model.optsum.xtol_zero_abs = 1.0e-8
+            model.optsum.ftol_zero_abs = 1.0e-10
+            if initial_scale != 1.0
+                model.optsum.initial .= model.optsum.initial .* initial_scale
+            end
+            fit!(model; REML=false, progress=false, backend=:nlopt, optimizer=optimizer)
+            return model
+        end
+
+        function lmeeeg_condition_lrt_attempt(y, cond, subject, item, random_slope, optimizer, initial_scale)
             df = lmeeeg_lrt_dataframe(y, cond, subject, item)
-            full = fit(MixedModel, lmeeeg_lrt_full_formula(random_slope), df; REML=false)
-            reduced = fit(MixedModel, lmeeeg_lrt_reduced_formula(random_slope), df; REML=false)
+            full = lmeeeg_lrt_fit_model(
+                lmeeeg_lrt_full_formula(random_slope),
+                df,
+                optimizer,
+                initial_scale,
+            )
+            reduced = lmeeeg_lrt_fit_model(
+                lmeeeg_lrt_reduced_formula(random_slope),
+                df,
+                optimizer,
+                initial_scale,
+            )
             statistic = 2.0 * (loglikelihood(full) - loglikelihood(reduced))
             return (statistic, issingular(full), issingular(reduced))
+        end
+
+        function lmeeeg_condition_lrt_and_singular(y, cond, subject, item, random_slope)
+            attempts = (
+                (:LN_BOBYQA, 1.0),
+                (:LN_BOBYQA, 0.5),
+                (:LN_NEWUOA, 1.0),
+                (:LN_NELDERMEAD, 1.0),
+                (:LN_NELDERMEAD, 0.5),
+                (:LN_COBYLA, 1.0),
+            )
+            statistic, full_singular, reduced_singular =
+                lmeeeg_condition_lrt_attempt(y, cond, subject, item, random_slope, attempts[1]...)
+            refit_triggered = false
+            unresolved_negative = false
+            if statistic < -1.0e-8
+                refit_triggered = true
+                best_statistic = statistic
+                best_full_singular = full_singular
+                best_reduced_singular = reduced_singular
+                for attempt in attempts[2:end]
+                    retry_statistic, retry_full_singular, retry_reduced_singular =
+                        lmeeeg_condition_lrt_attempt(y, cond, subject, item, random_slope, attempt...)
+                    if retry_statistic > best_statistic
+                        best_statistic = retry_statistic
+                        best_full_singular = retry_full_singular
+                        best_reduced_singular = retry_reduced_singular
+                    end
+                    if retry_statistic >= -1.0e-8
+                        statistic = retry_statistic
+                        full_singular = retry_full_singular
+                        reduced_singular = retry_reduced_singular
+                        return (statistic, full_singular, reduced_singular, refit_triggered, unresolved_negative)
+                    end
+                end
+                statistic = best_statistic
+                full_singular = best_full_singular
+                reduced_singular = best_reduced_singular
+                unresolved_negative = true
+            end
+            return (statistic, full_singular, reduced_singular, refit_triggered, unresolved_negative)
         end
 
         function lmeeeg_lrt_contract()
@@ -154,29 +240,44 @@ def _worker_init() -> None:
     _load_julia_lrt()
 
 
-def _fit_lrt_map(eeg: np.ndarray, metadata, random_slope: bool) -> tuple[np.ndarray, int, int]:
+def _fit_lrt_map(eeg: np.ndarray, metadata, random_slope: bool) -> _MapFitResult:
     jl = _load_julia_lrt()
     cond, subject, item = _metadata_columns(metadata)
     n_locations, n_times = eeg.shape[1], eeg.shape[2]
     lr_map = np.empty((n_locations, n_times), dtype=float)
     singular_count = 0
     total_count = 0
+    convergence_refit_triggered = False
+    unresolved_negative = False
     for location in range(n_locations):
         for time_index in range(n_times):
-            statistic, full_singular, reduced_singular = jl.lmeeeg_condition_lrt_and_singular(
+            statistic, full_singular, reduced_singular, refit_triggered, unresolved = (
+                jl.lmeeeg_condition_lrt_and_singular(
                 eeg[:, location, time_index],
                 cond,
                 subject,
                 item,
                 random_slope,
+                )
             )
             statistic = float(statistic)
-            if statistic < -1e-6:
-                raise RuntimeError(f"Negative LR statistic {statistic} at feature {location},{time_index}.")
+            convergence_refit_triggered = convergence_refit_triggered or bool(refit_triggered)
+            unresolved_negative = unresolved_negative or bool(unresolved)
+            if statistic < -1e-8:
+                raise RuntimeError(
+                    f"Negative LR statistic {statistic} remained after convergence refit "
+                    f"at feature {location},{time_index}."
+                )
             lr_map[location, time_index] = max(0.0, statistic)
             singular_count += int(bool(full_singular)) + int(bool(reduced_singular))
             total_count += 2
-    return lr_map, singular_count, total_count
+    return _MapFitResult(
+        statistic_map=lr_map,
+        singular_count=singular_count,
+        total_count=total_count,
+        convergence_refit_triggered=convergence_refit_triggered,
+        unresolved_negative=unresolved_negative,
+    )
 
 
 def _maxstat_lr_rejects(observed_lr: np.ndarray, null_lr: np.ndarray) -> bool:
@@ -268,25 +369,29 @@ def _run_one_sim(
         n_subjects=n_subjects,
         n_items=n_items,
     )
-    observed_lr, observed_singular, observed_total = _fit_lrt_map(
+    observed = _fit_lrt_map(
         eeg=eeg,
         metadata=metadata,
         random_slope=random_slope,
     )
-    null_lr = np.empty((n_permutations,) + observed_lr.shape, dtype=float)
+    null_lr = np.empty((n_permutations,) + observed.statistic_map.shape, dtype=float)
     permuted_singular = 0
     permuted_total = 0
+    permuted_refit_maps = 0
+    permuted_unresolved_negative_maps = 0
     rng = np.random.default_rng(seed + 700_000)
     for permutation_index in range(n_permutations):
         permuted_metadata = _permute_condition_within_subject(metadata=metadata, rng=rng)
-        permuted_lr, singular_count, total_count = _fit_lrt_map(
+        permuted = _fit_lrt_map(
             eeg=eeg,
             metadata=permuted_metadata,
             random_slope=random_slope,
         )
-        null_lr[permutation_index] = permuted_lr
-        permuted_singular += singular_count
-        permuted_total += total_count
+        null_lr[permutation_index] = permuted.statistic_map
+        permuted_singular += permuted.singular_count
+        permuted_total += permuted.total_count
+        permuted_refit_maps += int(permuted.convergence_refit_triggered)
+        permuted_unresolved_negative_maps += int(permuted.unresolved_negative)
 
     return SimResult(
         scenario=scenario,
@@ -295,13 +400,19 @@ def _run_one_sim(
         sim=sim,
         seed=seed,
         n_permutations=n_permutations,
-        maxstat=_maxstat_lr_rejects(observed_lr, null_lr),
-        cluster=_cluster_lr_rejects(observed_lr, null_lr),
-        tfce=_tfce_lr_rejects(observed_lr, null_lr),
-        observed_singular_fits=observed_singular,
-        observed_total_fits=observed_total,
+        maxstat=_maxstat_lr_rejects(observed.statistic_map, null_lr),
+        cluster=_cluster_lr_rejects(observed.statistic_map, null_lr),
+        tfce=_tfce_lr_rejects(observed.statistic_map, null_lr),
+        observed_singular_fits=observed.singular_count,
+        observed_total_fits=observed.total_count,
         permuted_singular_fits=permuted_singular,
         permuted_total_fits=permuted_total,
+        observed_convergence_refit_maps=int(observed.convergence_refit_triggered),
+        observed_total_maps=1,
+        observed_unresolved_negative_maps=int(observed.unresolved_negative),
+        permuted_convergence_refit_maps=permuted_refit_maps,
+        permuted_total_maps=n_permutations,
+        permuted_unresolved_negative_maps=permuted_unresolved_negative_maps,
         elapsed_seconds=time.perf_counter() - start,
     )
 
@@ -354,6 +465,14 @@ def _summarize(results: list[SimResult], n_permutations: int, expected_n_sims: i
         permuted_singular_fraction = sum(r.permuted_singular_fits for r in cell_results) / sum(
             r.permuted_total_fits for r in cell_results
         )
+        observed_convergence_refit_fraction = sum(
+            r.observed_convergence_refit_maps for r in cell_results
+        ) / sum(r.observed_total_maps for r in cell_results)
+        permuted_convergence_refit_fraction = sum(
+            r.permuted_convergence_refit_maps for r in cell_results
+        ) / sum(r.permuted_total_maps for r in cell_results)
+        observed_unresolved_negative_maps = sum(r.observed_unresolved_negative_maps for r in cell_results)
+        permuted_unresolved_negative_maps = sum(r.permuted_unresolved_negative_maps for r in cell_results)
         total_seconds = float(sum(r.elapsed_seconds for r in cell_results))
         mean_seconds = float(np.mean([r.elapsed_seconds for r in cell_results]))
         for backend in BACKENDS:
@@ -371,6 +490,10 @@ def _summarize(results: list[SimResult], n_permutations: int, expected_n_sims: i
                     n_permutations=n_permutations,
                     observed_singular_fraction=float(observed_singular_fraction),
                     permuted_singular_fraction=float(permuted_singular_fraction),
+                    observed_convergence_refit_fraction=float(observed_convergence_refit_fraction),
+                    permuted_convergence_refit_fraction=float(permuted_convergence_refit_fraction),
+                    observed_unresolved_negative_maps=int(observed_unresolved_negative_maps),
+                    permuted_unresolved_negative_maps=int(permuted_unresolved_negative_maps),
                     mean_seconds_per_sim=mean_seconds,
                     total_seconds=total_seconds,
                     complete=len(values) == expected_n_sims,
@@ -484,6 +607,10 @@ def main() -> None:
             f"backend={summary.backend} rate={summary.rate:.3f} mc_se={summary.mc_se:.3f} "
             f"observed_singular={summary.observed_singular_fraction:.3f} "
             f"permuted_singular={summary.permuted_singular_fraction:.3f} "
+            f"observed_refit={summary.observed_convergence_refit_fraction:.3f} "
+            f"permuted_refit={summary.permuted_convergence_refit_fraction:.3f} "
+            f"unresolved_negative_maps="
+            f"{summary.observed_unresolved_negative_maps + summary.permuted_unresolved_negative_maps} "
             f"mean_seconds_per_sim={summary.mean_seconds_per_sim:.3f} complete={summary.complete}",
             flush=True,
         )
