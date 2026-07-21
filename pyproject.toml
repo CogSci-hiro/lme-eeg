@@ -29,6 +29,9 @@ pymer4 = [
     "scikit-learn>=1.4",
     "formulae>=0.5",
 ]
+julia = [
+    "juliacall==0.9.35",
+]
 docs = [
     "sphinx>=7.2",
     "pydata-sphinx-theme>=0.15",
