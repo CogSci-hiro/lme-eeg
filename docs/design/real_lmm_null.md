@@ -364,3 +364,93 @@ inflated permutation null, especially for TFCE. Do not build a production
 fixed-theta permutation backend from this approximation. The next design step
 should reconsider the null scheme, with candidates including a properly derived
 mixed-model residual permutation or a faster full-refit engine.
+
+## Step 2D Reduced-Residual Permutation Design
+
+Release 2 Route A step 2d tests whether the repeated C2 inflation is caused by
+permuting the condition design under a random slope. The tested scheme is a
+Freedman-Lane-style residual permutation implemented only in the dev calibration
+harness:
+
+1. Fit the reduced ML mixed model once per feature on the observed data. The
+   reduced model drops only the fixed condition effect and keeps the random
+   structure:
+   `y ~ 1 + (1 + cond | subject) + (1 | item)` for C2/C3 and
+   `y ~ 1 + (1 | subject) + (1 | item)` for C1.
+2. Store the reduced-model conditional fitted values and conditional residuals.
+   Conditional residuals are used because they are the closest available estimate
+   of iid observation-level error after accounting for the fitted subject and
+   item random effects.
+3. For each null draw, keep the condition labels fixed and permute the reduced
+   conditional residuals within subject. Reconstruct
+   `y_perm = fitted_reduced + residual_perm`.
+4. Refit the full and reduced ML models to each reconstructed dataset and form
+   the same unsigned LR statistic, `2 * (logLik_full - logLik_reduced)`.
+5. Summarize the LR maps with the existing one-sided maxstat, cluster, and TFCE
+   correction helpers.
+
+Exchangeability argument: this scheme does not scramble the condition vector,
+so it preserves the subject-level condition pattern and the random-slope design
+that was non-exchangeable under within-subject design permutation. Within-subject
+residual permutation treats the conditional residuals as exchangeable
+observation-level errors inside each subject after the reduced mixed model has
+removed the fixed nuisance and random-effect structure. The same crossed-item
+limitation remains: the residual permutation respects subject blocks but does
+not enforce a second item-wise exchangeability constraint.
+
+The correction helpers operate on nonnegative LR maps as one-sided statistics
+(`tail=1` for cluster/TFCE, max over LR maps for maxstat) and use the
+`(b + 1) / (m + 1)` permutation p-value. Negative LR values below `-1e-8` are
+treated as convergence failures and retried by the Julia LRT engine; only
+sub-epsilon numerical noise is rounded to zero. The step 2d runs below had no
+unresolved negative LR maps.
+
+## Step 2D Reduced-Residual Permutation Result
+
+Run date: 2026-07-21.
+
+The random-slope H0 guard passed before these FWER numbers were trusted:
+
+```text
+test_real_lmm_slope_h0_guard_passes_before_refit_calibration
+1 passed in 465.47 s
+```
+
+Settings:
+
+- MixedModels.jl full-refit LRT engine from Route A
+- ML for full and reduced models
+- `permutation_method=reduced_residual`
+- within-subject permutation of reduced conditional residuals
+- 6 subjects x 5 items
+- four features
+- `n_sims=300`
+- `n_permutations=500`
+
+| Scenario | Backend | Rate | MC SE | Observed singular | Permuted singular | Permuted refit-trigger | Mean sec/sim |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| C2 random slope H0 | maxstat | 0.003 | 0.003 | 0.001 | 0.002 | 0.000007 | 21.994 |
+| C2 random slope H0 | cluster | 0.017 | 0.007 | 0.001 | 0.002 | 0.000007 | 21.994 |
+| C2 random slope H0 | TFCE | 0.007 | 0.005 | 0.001 | 0.002 | 0.000007 | 21.994 |
+| C1 crossed intercept H0 | maxstat | 0.047 | 0.012 | 0.002 | 0.004 | 0.000000 | 15.132 |
+| C1 crossed intercept H0 | cluster | 0.057 | 0.013 | 0.002 | 0.004 | 0.000000 | 15.132 |
+| C1 crossed intercept H0 | TFCE | 0.050 | 0.013 | 0.002 | 0.004 | 0.000000 | 15.132 |
+| C3 fixed effect present | maxstat | 0.000 | 0.000 | 0.000 | 0.001 | 0.000000 | 8.275 |
+| C3 fixed effect present | cluster | 0.027 | 0.009 | 0.000 | 0.001 | 0.000000 | 8.275 |
+| C3 fixed effect present | TFCE | 0.013 | 0.007 | 0.000 | 0.001 | 0.000000 | 8.275 |
+
+Comparison target from design-permutation LRT at the same C2 6x5 cell:
+
+| Scheme | maxstat | cluster | TFCE |
+| --- | --- | --- | --- |
+| Design permutation, tight LRT | 0.123 | 0.127 | 0.167 |
+| Reduced-residual permutation, tight LRT | 0.003 | 0.017 | 0.007 |
+
+Step 2d verdict: reduced-residual permutation removes the C2 inflation and C1
+stays nominal, which supports the diagnosis that design permutation was
+non-exchangeable under random slopes. However, the C3 power sanity check fails
+badly at 6x5. This residual-permutation scheme is therefore not a production GO:
+it appears calibrated or conservative under the tested nulls, but too
+conservative under the effect-present case used by this harness. Do not build a
+production residual-permutation backend from this slice without a follow-up power
+diagnostic or a revised residual scheme.
