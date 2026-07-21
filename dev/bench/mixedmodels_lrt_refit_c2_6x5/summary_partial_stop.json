@@ -1,0 +1,44 @@
+[
+  {
+    "backend": "maxstat",
+    "complete": false,
+    "mc_se": 0.03973918859029906,
+    "mean_seconds_per_sim": 15.321805728136539,
+    "n_items": 5,
+    "n_permutations": 500,
+    "n_sims": 42,
+    "n_subjects": 6,
+    "observed_singular_fraction": 0.06845238095238096,
+    "permuted_singular_fraction": 0.753827380952381,
+    "rate": 0.07142857142857142,
+    "scenario": "C2"
+  },
+  {
+    "backend": "cluster",
+    "complete": false,
+    "mc_se": 0.03973918859029906,
+    "mean_seconds_per_sim": 15.321805728136539,
+    "n_items": 5,
+    "n_permutations": 500,
+    "n_sims": 42,
+    "n_subjects": 6,
+    "observed_singular_fraction": 0.06845238095238096,
+    "permuted_singular_fraction": 0.753827380952381,
+    "rate": 0.07142857142857142,
+    "scenario": "C2"
+  },
+  {
+    "backend": "tfce",
+    "complete": false,
+    "mc_se": 0.04529474910530199,
+    "mean_seconds_per_sim": 15.321805728136539,
+    "n_items": 5,
+    "n_permutations": 500,
+    "n_sims": 42,
+    "n_subjects": 6,
+    "observed_singular_fraction": 0.06845238095238096,
+    "permuted_singular_fraction": 0.753827380952381,
+    "rate": 0.09523809523809523,
+    "scenario": "C2"
+  }
+]
