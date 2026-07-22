@@ -562,3 +562,44 @@ borderline. The next check should be a larger-design bootstrap cell or a
 higher-precision 6x5 rerun focused on cluster/TFCE before any production build.
 The detailed evidence is in
 `dev/bench/mixedmodels_lrt_parametric_bootstrap_report.md`.
+
+## Step 3 Nested sEEG Design Feasibility
+
+Run date: 2026-07-22.
+
+Step 3 started the real-design calibration for nested sEEG contacts:
+
+```text
+R1: y ~ 1 + cond + (1 + cond | subject) + (1 + cond | contact)
+R2: y ~ 1 + cond + (1 + cond | subject) + (1 | contact)
+```
+
+where `contact` is globally labeled as `subject:contact`, making contacts
+nested in subjects. The target design was 6 or 15 subjects, 5 contacts per
+subject, 40 trials per subject, and a 128-timepoint one-dimensional ROI map.
+The null method was the same MixedModels.jl ML LRT with parametric bootstrap
+from the fitted reduced model.
+
+A dev harness was added at:
+
+```text
+dev/bench/calibrate_nested_seeg_parametric_bootstrap.py
+```
+
+The harness guard/smoke passed, but timing probes showed the full requested
+`n_sims=300`, `n_boot=500`, `n_features=128` grid is not feasible as an
+in-session local run. Projected wall-time on 4 workers:
+
+| Subjects | Variant | Projected hours per cell |
+| --- | ---: | ---: |
+| 6 | R1 | 75.0 |
+| 6 | R2 | 6.7 |
+| 15 | R1 | 32.4 |
+| 15 | R2 | 10.6 |
+
+The full 12-cell grid projects to roughly 15-16 days on 4 workers, with n=6/R1
+dominating. The full calibration table was therefore not run in this session.
+This is a feasibility stop, not a calibration result or method failure.
+
+The detailed timing record and exact full-grid command are in
+`dev/bench/nested_seeg_parametric_bootstrap_feasibility.md`.
