@@ -55,6 +55,14 @@ SCENARIOS = {
     "C3": {"random_slope": True, "fixed_effect": 0.45},
 }
 BACKENDS = ("maxstat", "cluster", "tfce")
+PERMUTATION_METHODS = (
+    "design",
+    "reduced_residual",
+    "conditional_same_slope",
+    "marginal_same_slope",
+    "marginal_no_slope",
+    "subject_signflip",
+)
 
 _JL: Any | None = None
 
@@ -127,6 +135,13 @@ class _ResidualSetupResult:
     total_count: int
     convergence_refit_triggered: bool
     unresolved_negative: bool
+
+
+@dataclass(frozen=True)
+class _ResidualVariant:
+    residual_random_slope: bool
+    residual_type: str
+    permutation_unit: str
 
 
 def _load_julia_lrt() -> Any:
@@ -235,7 +250,15 @@ def _load_julia_lrt() -> Any:
             return (statistic, full_singular, reduced_singular, refit_triggered, unresolved_negative)
         end
 
-        function lmeeeg_condition_lrt_reduced_parts(y, cond, subject, item, random_slope)
+        function lmeeeg_condition_lrt_reduced_parts(
+            y,
+            cond,
+            subject,
+            item,
+            test_random_slope,
+            residual_random_slope,
+            residual_type,
+        )
             attempts = (
                 (:LN_BOBYQA, 1.0),
                 (:LN_BOBYQA, 0.5),
@@ -246,15 +269,22 @@ def _load_julia_lrt() -> Any:
             )
             df = lmeeeg_lrt_dataframe(y, cond, subject, item)
             full = lmeeeg_lrt_fit_model(
-                lmeeeg_lrt_full_formula(random_slope),
+                lmeeeg_lrt_full_formula(test_random_slope),
                 df,
                 attempts[1]...,
             )
             reduced = lmeeeg_lrt_fit_model(
-                lmeeeg_lrt_reduced_formula(random_slope),
+                lmeeeg_lrt_reduced_formula(test_random_slope),
                 df,
                 attempts[1]...,
             )
+            residual_reduced = test_random_slope == residual_random_slope ?
+                reduced :
+                lmeeeg_lrt_fit_model(
+                    lmeeeg_lrt_reduced_formula(residual_random_slope),
+                    df,
+                    attempts[1]...,
+                )
             statistic = 2.0 * (loglikelihood(full) - loglikelihood(reduced))
             refit_triggered = false
             unresolved_negative = false
@@ -284,12 +314,24 @@ def _load_julia_lrt() -> Any:
                         statistic = retry_statistic
                         full = retry_full
                         reduced = retry_reduced
+                        residual_reduced = test_random_slope == residual_random_slope ?
+                            reduced :
+                            lmeeeg_lrt_fit_model(
+                                lmeeeg_lrt_reduced_formula(residual_random_slope),
+                                df,
+                                attempt...,
+                            )
+                        fixed_fitted = collect(modelmatrix(residual_reduced) * fixef(residual_reduced))
+                        reduced_fitted = residual_type == "conditional" ?
+                            collect(fitted(residual_reduced)) :
+                            fixed_fitted
                         return (
                             statistic,
                             issingular(full),
                             issingular(reduced),
-                            collect(fitted(reduced)),
-                            collect(residuals(reduced)),
+                            issingular(residual_reduced),
+                            reduced_fitted,
+                            collect(Float64.(pyconvert(Vector, y))) - reduced_fitted,
                             refit_triggered,
                             unresolved_negative,
                         )
@@ -298,14 +340,26 @@ def _load_julia_lrt() -> Any:
                 statistic = best_statistic
                 full = best_full
                 reduced = best_reduced
+                residual_reduced = test_random_slope == residual_random_slope ?
+                    reduced :
+                    lmeeeg_lrt_fit_model(
+                        lmeeeg_lrt_reduced_formula(residual_random_slope),
+                        df,
+                        attempts[end]...,
+                    )
                 unresolved_negative = true
             end
+            fixed_fitted = collect(modelmatrix(residual_reduced) * fixef(residual_reduced))
+            reduced_fitted = residual_type == "conditional" ?
+                collect(fitted(residual_reduced)) :
+                fixed_fitted
             return (
                 statistic,
                 issingular(full),
                 issingular(reduced),
-                collect(fitted(reduced)),
-                collect(residuals(reduced)),
+                issingular(residual_reduced),
+                reduced_fitted,
+                collect(Float64.(pyconvert(Vector, y))) - reduced_fitted,
                 refit_triggered,
                 unresolved_negative,
             )
@@ -372,7 +426,12 @@ def _fit_lrt_map(eeg: np.ndarray, metadata, random_slope: bool) -> _MapFitResult
     )
 
 
-def _fit_lrt_residual_setup(eeg: np.ndarray, metadata, random_slope: bool) -> _ResidualSetupResult:
+def _fit_lrt_residual_setup(
+    eeg: np.ndarray,
+    metadata,
+    random_slope: bool,
+    variant: _ResidualVariant,
+) -> _ResidualSetupResult:
     jl = _load_julia_lrt()
     cond, subject, item = _metadata_columns(metadata)
     n_locations, n_times = eeg.shape[1], eeg.shape[2]
@@ -389,6 +448,7 @@ def _fit_lrt_residual_setup(eeg: np.ndarray, metadata, random_slope: bool) -> _R
                 statistic,
                 full_singular,
                 reduced_singular,
+                residual_singular,
                 reduced_fitted,
                 reduced_residuals,
                 refit_triggered,
@@ -399,6 +459,8 @@ def _fit_lrt_residual_setup(eeg: np.ndarray, metadata, random_slope: bool) -> _R
                 subject,
                 item,
                 random_slope,
+                variant.residual_random_slope,
+                variant.residual_type,
             )
             statistic = float(statistic)
             convergence_refit_triggered = convergence_refit_triggered or bool(refit_triggered)
@@ -411,6 +473,9 @@ def _fit_lrt_residual_setup(eeg: np.ndarray, metadata, random_slope: bool) -> _R
             lr_map[location, time_index] = max(0.0, statistic)
             singular_count += int(bool(full_singular)) + int(bool(reduced_singular))
             total_count += 2
+            if variant.residual_random_slope != random_slope:
+                singular_count += int(bool(residual_singular))
+                total_count += 1
             row_features.append(
                 _ResidualFeature(
                     reduced_fitted=np.asarray(reduced_fitted, dtype=float),
@@ -428,6 +493,36 @@ def _fit_lrt_residual_setup(eeg: np.ndarray, metadata, random_slope: bool) -> _R
     )
 
 
+def _resolve_residual_variant(permutation_method: str, random_slope: bool) -> _ResidualVariant | None:
+    if permutation_method == "design":
+        return None
+    if permutation_method in {"reduced_residual", "conditional_same_slope"}:
+        return _ResidualVariant(
+            residual_random_slope=random_slope,
+            residual_type="conditional",
+            permutation_unit="within_subject",
+        )
+    if permutation_method == "marginal_same_slope":
+        return _ResidualVariant(
+            residual_random_slope=random_slope,
+            residual_type="marginal",
+            permutation_unit="within_subject",
+        )
+    if permutation_method == "marginal_no_slope":
+        return _ResidualVariant(
+            residual_random_slope=False,
+            residual_type="marginal",
+            permutation_unit="within_subject",
+        )
+    if permutation_method == "subject_signflip":
+        return _ResidualVariant(
+            residual_random_slope=random_slope,
+            residual_type="marginal",
+            permutation_unit="subject_signflip",
+        )
+    raise ValueError(f"Unknown permutation_method {permutation_method!r}.")
+
+
 def _permute_residual_values_within_subject(metadata, values: np.ndarray, rng: np.random.Generator) -> np.ndarray:
     values = np.asarray(values, dtype=float)
     permuted = values.copy()
@@ -437,6 +532,17 @@ def _permute_residual_values_within_subject(metadata, values: np.ndarray, rng: n
         if group_indices.size > 1:
             permuted[group_indices] = values[group_indices[rng.permutation(group_indices.size)]]
     return permuted
+
+
+def _sign_flip_residual_values_by_subject(metadata, values: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    flipped = values.copy()
+    group_codes = np.asarray(metadata["subject"].astype("category").cat.codes, dtype=int)
+    for group_code in np.unique(group_codes):
+        group_indices = np.flatnonzero(group_codes == group_code)
+        sign = -1.0 if rng.random() < 0.5 else 1.0
+        flipped[group_indices] = sign * values[group_indices]
+    return flipped
 
 
 def _maxstat_lr_rejects(observed_lr: np.ndarray, null_lr: np.ndarray) -> bool:
@@ -529,7 +635,8 @@ def _run_one_sim(
         n_subjects=n_subjects,
         n_items=n_items,
     )
-    if permutation_method == "design":
+    residual_variant = _resolve_residual_variant(permutation_method, random_slope)
+    if residual_variant is None:
         observed = _fit_lrt_map(
             eeg=eeg,
             metadata=metadata,
@@ -537,11 +644,12 @@ def _run_one_sim(
         )
         observed_lr = observed.statistic_map
         residual_features = None
-    elif permutation_method == "reduced_residual":
+    else:
         residual_setup = _fit_lrt_residual_setup(
             eeg=eeg,
             metadata=metadata,
             random_slope=random_slope,
+            variant=residual_variant,
         )
         observed = _MapFitResult(
             statistic_map=residual_setup.observed_statistic_map,
@@ -552,8 +660,6 @@ def _run_one_sim(
         )
         observed_lr = residual_setup.observed_statistic_map
         residual_features = residual_setup.features
-    else:
-        raise ValueError(f"Unknown permutation_method {permutation_method!r}.")
 
     null_lr = np.empty((n_permutations,) + observed_lr.shape, dtype=float)
     permuted_singular = 0
@@ -562,7 +668,7 @@ def _run_one_sim(
     permuted_unresolved_negative_maps = 0
     rng = np.random.default_rng(seed + 700_000)
     for permutation_index in range(n_permutations):
-        if permutation_method == "design":
+        if residual_variant is None:
             permuted_metadata = _permute_condition_within_subject(metadata=metadata, rng=rng)
             permuted_eeg = eeg
         else:
@@ -572,11 +678,22 @@ def _run_one_sim(
             permuted_eeg = np.empty_like(eeg, dtype=float)
             for location, row_features in enumerate(residual_features):
                 for time_index, feature in enumerate(row_features):
-                    permuted_residuals = _permute_residual_values_within_subject(
-                        metadata=metadata,
-                        values=feature.reduced_residuals,
-                        rng=rng,
-                    )
+                    if residual_variant.permutation_unit == "within_subject":
+                        permuted_residuals = _permute_residual_values_within_subject(
+                            metadata=metadata,
+                            values=feature.reduced_residuals,
+                            rng=rng,
+                        )
+                    elif residual_variant.permutation_unit == "subject_signflip":
+                        permuted_residuals = _sign_flip_residual_values_by_subject(
+                            metadata=metadata,
+                            values=feature.reduced_residuals,
+                            rng=rng,
+                        )
+                    else:
+                        raise ValueError(
+                            f"Unknown residual permutation unit {residual_variant.permutation_unit!r}."
+                        )
                     permuted_eeg[:, location, time_index] = feature.reduced_fitted + permuted_residuals
         permuted = _fit_lrt_map(
             eeg=permuted_eeg,
@@ -737,9 +854,13 @@ def main() -> None:
     parser.add_argument("--print-contract", action="store_true")
     parser.add_argument(
         "--permutation-method",
-        choices=("design", "reduced_residual"),
+        choices=PERMUTATION_METHODS,
         default="design",
-        help="Use design-label permutation or reduced-model conditional residual permutation.",
+        help=(
+            "Use design-label permutation or one residual permutation variant: "
+            "conditional_same_slope/reduced_residual, marginal_same_slope, "
+            "marginal_no_slope, or subject_signflip."
+        ),
     )
     args = parser.parse_args()
 

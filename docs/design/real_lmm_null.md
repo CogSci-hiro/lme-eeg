@@ -454,3 +454,48 @@ it appears calibrated or conservative under the tested nulls, but too
 conservative under the effect-present case used by this harness. Do not build a
 production residual-permutation backend from this slice without a follow-up power
 diagnostic or a revised residual scheme.
+
+## Step 2E Residual-Permutation Power Frontier
+
+Run date: 2026-07-21.
+
+Step 2e tested three less-conservative residual variants at the decisive 6x5
+cell, with `n_sims=300`, `n_permutations=500`, and the same tight-convergence
+MixedModels.jl LRT engine:
+
+- V1: marginal residuals from the fixed-effect-reduced random-slope model,
+  permuted within subject.
+- V2: marginal residuals from a fixed-effect-reduced crossed-intercept model,
+  permuted within subject, while still testing the full random-slope LRT.
+- V3: subject-level sign-flip of marginal residuals from the fixed-effect-
+  reduced random-slope model.
+
+The H0 guard passed before calibration:
+
+```text
+test_real_lmm_slope_h0_guard_passes_before_refit_calibration
+1 passed in 638.34 s
+```
+
+Rates are `maxstat / cluster / TFCE`:
+
+| Variant | C1 H0 | C2 slope H0 | C3 effect | Verdict |
+| --- | --- | --- | --- | --- |
+| 2d conditional | 0.047 / 0.057 / 0.050 | 0.003 / 0.017 / 0.007 | 0.000 / 0.027 / 0.013 | underpowered |
+| V1 marginal | 0.047 / 0.057 / 0.053 | 0.113 / 0.113 / 0.150 | 0.673 / 0.683 / 0.757 | C2 inflated |
+| V2 no-slope | 0.047 / 0.057 / 0.053 | 0.113 / 0.113 / 0.150 | 0.673 / 0.683 / 0.757 | C2 inflated |
+| V3 sign-flip | 0.377 / 0.153 / 0.400 | 0.060 / 0.097 / 0.107 | 0.410 / 0.620 / 0.610 | C1/C2 inflated |
+
+No tuned variant satisfies the required envelope: C1 nominal, C2 nominal, and
+C3 powered across maxstat, cluster, and TFCE. The 6x5 result is a genuine
+frontier, not a one-off implementation failure: conditional residuals protect
+the null but collapse power; marginal residuals recover power but reintroduce
+C2 inflation; subject sign-flip is powerful but invalid for C1 and still high
+for C2 cluster/TFCE.
+
+Step 2e verdict: do not build a production random-slope residual-permutation
+backend from these variants. Next options are a larger minimum-design
+calibration, explicit ROI/window scope with design-specific calibration, or the
+step-2A parametric per-feature LMM statistic with a non-permutation
+multiple-comparison correction. The detailed evidence is in
+`dev/bench/mixedmodels_lrt_residual_power_frontier_report.md`.
