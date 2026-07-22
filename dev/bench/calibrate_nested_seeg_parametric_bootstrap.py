@@ -53,6 +53,8 @@ class SimConfig:
     n_features: int
     n_boot: int
     seed: int
+    subject_slope_sd: float
+    contact_slope_sd: float
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,8 @@ class SimResult:
     trials_per_subject: int
     n_features: int
     n_boot: int
+    subject_slope_sd: float
+    contact_slope_sd: float
     maxstat: bool
     cluster: bool
     tfce: bool
@@ -95,6 +99,8 @@ class CellSummary:
     contacts_per_subject: int
     trials_per_subject: int
     n_features: int
+    subject_slope_sd: float
+    contact_slope_sd: float
     observed_singular_fraction: float
     boot_singular_fraction: float
     observed_refit_fraction: float
@@ -384,8 +390,8 @@ def _simulate_nested_seeg(config: SimConfig) -> tuple[np.ndarray, pd.DataFrame]:
 
     subject_intercepts = rng.normal(0.0, 0.55, size=config.n_subjects)
     contact_intercepts = rng.normal(0.0, 0.35, size=config.n_subjects * config.contacts_per_subject)
-    subject_slope_sd = 0.0 if config.scenario == "C1" else 0.40
-    contact_slope_sd = 0.0 if config.scenario == "C1" or config.re_variant == "R2" else 0.25
+    contact_slope_sd = 0.0 if config.scenario == "C1" else config.contact_slope_sd
+    subject_slope_sd = 0.0 if config.scenario == "C1" else config.subject_slope_sd
     subject_slopes = rng.normal(0.0, subject_slope_sd, size=config.n_subjects)
     contact_slopes = rng.normal(0.0, contact_slope_sd, size=config.n_subjects * config.contacts_per_subject)
 
@@ -581,6 +587,8 @@ def _run_one_sim(config: SimConfig, sim: int) -> SimResult:
         trials_per_subject=config.trials_per_subject,
         n_features=config.n_features,
         n_boot=config.n_boot,
+        subject_slope_sd=config.subject_slope_sd,
+        contact_slope_sd=config.contact_slope_sd,
         maxstat=_maxstat_rejects(setup.observed_lr, null_lr),
         cluster=_cluster_rejects(setup.observed_lr, null_lr),
         tfce=_tfce_rejects(setup.observed_lr, null_lr),
@@ -689,6 +697,8 @@ def _summarize(results: list[SimResult], expected_n_sims: int) -> list[CellSumma
                     contacts_per_subject=first.contacts_per_subject,
                     trials_per_subject=first.trials_per_subject,
                     n_features=first.n_features,
+                    subject_slope_sd=first.subject_slope_sd,
+                    contact_slope_sd=first.contact_slope_sd,
                     observed_singular_fraction=float(observed_singular_fraction),
                     boot_singular_fraction=float(boot_singular_fraction),
                     observed_refit_fraction=float(observed_refit_fraction),
@@ -722,7 +732,14 @@ def _run_guard(args: argparse.Namespace) -> None:
                 n_features=min(4, args.n_features),
                 n_boot=2,
                 seed=_seed_for(n_subjects, re_variant, "C2", 0, args.seed_offset),
+                subject_slope_sd=args.subject_slope_sd,
+                contact_slope_sd=args.contact_slope_sd,
             )
+            if re_variant == "R2" and config.contact_slope_sd <= 0.0:
+                raise RuntimeError(
+                    "R2 misspecification guard failed: --contact-slope-sd must be > 0 "
+                    "so the generator includes omitted contact-level condition slopes."
+                )
             eeg, metadata = _simulate_nested_seeg(config)
             counts = metadata.groupby("subject")["cond"].value_counts().unstack(fill_value=0)
             if not (counts["A"].to_numpy() == counts["B"].to_numpy()).all():
@@ -732,6 +749,8 @@ def _run_guard(args: argparse.Namespace) -> None:
                 raise RuntimeError(f"Guard produced non-finite LR map for {n_subjects=} {re_variant=}.")
             print(
                 f"GUARD n_subjects={n_subjects} re_variant={re_variant} "
+                f"subject_slope_sd={config.subject_slope_sd:.3f} "
+                f"contact_slope_sd={config.contact_slope_sd:.3f} "
                 f"features={config.n_features} max_lr={float(np.max(setup.observed_lr)):.3f} "
                 f"singular={setup.singular_count / setup.total_count:.3f}",
                 flush=True,
@@ -749,6 +768,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--n-features", type=int, default=DEFAULT_N_FEATURES)
     parser.add_argument("--n-sims", type=int, default=300)
     parser.add_argument("--n-boot", type=int, default=500)
+    parser.add_argument("--subject-slope-sd", type=float, default=0.40)
+    parser.add_argument(
+        "--contact-slope-sd",
+        type=float,
+        default=0.0,
+        help=(
+            "Generator contact-level condition-slope SD. Must be set explicitly "
+            "for R2 misspecification tests."
+        ),
+    )
     parser.add_argument("--workers", type=int, default=int(os.environ.get("LMEEG_NESTED_SEEG_WORKERS", "1")))
     parser.add_argument("--seed-offset", type=int, default=510_000)
     parser.add_argument("--skip-guard", action="store_true")
@@ -778,7 +807,8 @@ def main() -> None:
     print(
         f"START nested_seeg n_subjects={args.n_subjects} re_variants={args.re_variants} "
         f"scenarios={args.scenarios} n_sims={args.n_sims} n_boot={args.n_boot} "
-        f"n_features={args.n_features} workers={args.workers} remaining_tasks={len(tasks)} "
+        f"n_features={args.n_features} subject_slope_sd={args.subject_slope_sd:.3f} "
+        f"contact_slope_sd={args.contact_slope_sd:.3f} workers={args.workers} remaining_tasks={len(tasks)} "
         f"approx_fits_per_sim={fits_per_sim}",
         flush=True,
     )
@@ -798,6 +828,8 @@ def main() -> None:
                     n_features=args.n_features,
                     n_boot=args.n_boot,
                     seed=_seed_for(n_subjects, re_variant, scenario, sim, args.seed_offset),
+                    subject_slope_sd=args.subject_slope_sd,
+                    contact_slope_sd=args.contact_slope_sd,
                 )
                 result = _run_one_sim(config=config, sim=sim)
                 handle.write(json.dumps(asdict(result), sort_keys=True) + "\n")
@@ -817,6 +849,8 @@ def main() -> None:
                         n_features=args.n_features,
                         n_boot=args.n_boot,
                         seed=_seed_for(n_subjects, re_variant, scenario, sim, args.seed_offset),
+                        subject_slope_sd=args.subject_slope_sd,
+                        contact_slope_sd=args.contact_slope_sd,
                     )
                     futures[pool.submit(_run_one_sim, config, sim)] = config
                 for future in as_completed(futures):
@@ -832,7 +866,9 @@ def main() -> None:
         print(
             f"RESULT n_subjects={summary.n_subjects} re_variant={summary.re_variant} "
             f"scenario={summary.scenario} backend={summary.backend} rate={summary.rate:.3f} "
-            f"mc_se={summary.mc_se:.3f} observed_singular={summary.observed_singular_fraction:.3f} "
+            f"mc_se={summary.mc_se:.3f} subject_slope_sd={summary.subject_slope_sd:.3f} "
+            f"contact_slope_sd={summary.contact_slope_sd:.3f} "
+            f"observed_singular={summary.observed_singular_fraction:.3f} "
             f"boot_singular={summary.boot_singular_fraction:.3f} observed_refit={summary.observed_refit_fraction:.3f} "
             f"boot_refit={summary.boot_refit_fraction:.3f} unresolved_negative_maps="
             f"{summary.observed_unresolved_negative_maps + summary.boot_unresolved_negative_maps} "

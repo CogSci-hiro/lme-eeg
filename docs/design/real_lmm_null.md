@@ -603,3 +603,27 @@ This is a feasibility stop, not a calibration result or method failure.
 
 The detailed timing record and exact full-grid command are in
 `dev/bench/nested_seeg_parametric_bootstrap_feasibility.md`.
+
+## Step 3B R2 Misspecification Prep
+
+Run date: 2026-07-22.
+
+Step 3b prepares the n=6 nested sEEG R2 misspecification calibration. The
+generator must include contact-level condition-slope variance while the fitted
+model omits that slope:
+
+```text
+Generator: subject slope + contact slope
+Fitted R2: y ~ 1 + cond + (1 + cond | subject) + (1 | contact)
+```
+
+The harness now exposes `--contact-slope-sd` independently of the fitted
+random-effects variant. For R2 misspecification tests, a zero contact-slope SD
+raises before calibration starts, preventing accidental correctly specified R2
+runs.
+
+The full C2/C1/C3 calibration was not launched because the real-data
+contact-slope SD was not supplied in the prompt and was not found in the repo.
+That value defines the misspecification magnitude and must not be invented. The
+prepared commands for the observed-magnitude and 2x-magnitude C2 cells are in
+`dev/bench/nested_seeg_r2_misspecification_prep.md`.
