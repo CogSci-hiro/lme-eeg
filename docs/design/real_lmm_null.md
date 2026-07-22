@@ -499,3 +499,66 @@ calibration, explicit ROI/window scope with design-specific calibration, or the
 step-2A parametric per-feature LMM statistic with a non-permutation
 multiple-comparison correction. The detailed evidence is in
 `dev/bench/mixedmodels_lrt_residual_power_frontier_report.md`.
+
+## Step 2F Parametric Bootstrap
+
+Run date: 2026-07-22.
+
+Step 2f tested parametric bootstrap as a family-wise null for the full-refit LRT
+random-slope path. For each feature, the fixed-effect-reduced model was fit by
+ML, dropping only fixed `cond` and keeping the full random-effects structure:
+
+```text
+y ~ 1 + (1 + cond | subject) + (1 | item)
+```
+
+Bootstrap replicates were generated with MixedModels.jl `simulate` from that
+fitted null model, then the full and reduced ML models were refit and the same
+unsigned LR statistic was recomputed. Maxstat, cluster, and TFCE were applied to
+the resulting bootstrap LR maps.
+
+Parametric bootstrap sidesteps permutation exchangeability, but it pays for that
+by assuming the fitted null model is distributionally correct: Gaussian random
+effects, Gaussian residuals, and the fitted covariance structure. Since the
+calibration generator is also Gaussian, this test is partly self-fulfilling. It
+validates the plumbing and finite-sample behavior under correct specification;
+it does not establish robustness to non-Gaussian EEG errors.
+
+The step-2e V1/V2 bit-identical rejection rates were also checked. V2 did drop
+the random slope in the residual-source model in the normal path: its timing and
+singular diagnostics differed from V1. A latent Julia retry-branch typo was
+fixed in the dev harness, but that branch did not drive the recorded V1/V2
+results because no residual-setup negative-LR retry was observed.
+
+Guard:
+
+```text
+test_real_lmm_slope_h0_guard_passes_before_refit_calibration
+1 passed in 276.73 s
+```
+
+Settings:
+
+- 6 subjects x 5 items
+- four features
+- `n_sims=300`
+- `n_boot=500`
+- full and reduced MixedModels.jl ML fits
+
+Rates are `maxstat / cluster / TFCE`:
+
+| Scenario | Rates | MC SEs | Verdict |
+| --- | --- | --- | --- |
+| C1 crossed-intercept H0 | 0.050 / 0.060 / 0.057 | 0.013 / 0.014 / 0.013 | nominal |
+| C2 random-slope H0 | 0.047 / 0.093 / 0.087 | 0.012 / 0.017 / 0.016 | mixed |
+| C3 fixed effect | 0.340 / 0.613 / 0.590 | 0.027 / 0.028 / 0.028 | powered |
+
+Step 2f verdict: parametric bootstrap is the best random-slope family-wise null
+tested so far, but it is not a clean production GO at 6x5 for all correction
+backends. C1 is nominal, C3 is powered, and C2 maxstat is nominal, but C2
+cluster/TFCE sit at the nominal boundary (`0.093 / 0.087`). With `n_sims=300`,
+the three-SE bound is about `0.088`, so cluster is just above it and TFCE is
+borderline. The next check should be a larger-design bootstrap cell or a
+higher-precision 6x5 rerun focused on cluster/TFCE before any production build.
+The detailed evidence is in
+`dev/bench/mixedmodels_lrt_parametric_bootstrap_report.md`.

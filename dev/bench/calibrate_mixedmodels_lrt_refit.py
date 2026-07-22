@@ -62,6 +62,7 @@ PERMUTATION_METHODS = (
     "marginal_same_slope",
     "marginal_no_slope",
     "subject_signflip",
+    "parametric_bootstrap",
 )
 
 _JL: Any | None = None
@@ -144,6 +145,21 @@ class _ResidualVariant:
     permutation_unit: str
 
 
+@dataclass(frozen=True)
+class _BootstrapFeature:
+    reduced_model: Any
+
+
+@dataclass(frozen=True)
+class _BootstrapSetupResult:
+    observed_statistic_map: np.ndarray
+    features: list[list[_BootstrapFeature]]
+    singular_count: int
+    total_count: int
+    convergence_refit_triggered: bool
+    unresolved_negative: bool
+
+
 def _load_julia_lrt() -> Any:
     global _JL
     if _JL is not None:
@@ -151,7 +167,7 @@ def _load_julia_lrt() -> Any:
     _configure_julia()
     from juliacall import Main as jl
 
-    jl.seval("using MixedModels, DataFrames, StatsModels")
+    jl.seval("using MixedModels, DataFrames, Random, StatsModels")
     jl.seval(
         r"""
         function lmeeeg_lrt_dataframe(y, cond, subject, item)
@@ -295,12 +311,12 @@ def _load_julia_lrt() -> Any:
                 best_reduced = reduced
                 for attempt in attempts[2:end]
                     retry_full = lmeeeg_lrt_fit_model(
-                        lmeeeg_lrt_full_formula(random_slope),
+                        lmeeeg_lrt_full_formula(test_random_slope),
                         df,
                         attempt...,
                     )
                     retry_reduced = lmeeeg_lrt_fit_model(
-                        lmeeeg_lrt_reduced_formula(random_slope),
+                        lmeeeg_lrt_reduced_formula(test_random_slope),
                         df,
                         attempt...,
                     )
@@ -363,6 +379,84 @@ def _load_julia_lrt() -> Any:
                 refit_triggered,
                 unresolved_negative,
             )
+        end
+
+        function lmeeeg_condition_lrt_bootstrap_parts(y, cond, subject, item, random_slope)
+            attempts = (
+                (:LN_BOBYQA, 1.0),
+                (:LN_BOBYQA, 0.5),
+                (:LN_NEWUOA, 1.0),
+                (:LN_NELDERMEAD, 1.0),
+                (:LN_NELDERMEAD, 0.5),
+                (:LN_COBYLA, 1.0),
+            )
+            df = lmeeeg_lrt_dataframe(y, cond, subject, item)
+            full = lmeeeg_lrt_fit_model(
+                lmeeeg_lrt_full_formula(random_slope),
+                df,
+                attempts[1]...,
+            )
+            reduced = lmeeeg_lrt_fit_model(
+                lmeeeg_lrt_reduced_formula(random_slope),
+                df,
+                attempts[1]...,
+            )
+            statistic = 2.0 * (loglikelihood(full) - loglikelihood(reduced))
+            refit_triggered = false
+            unresolved_negative = false
+            if statistic < -1.0e-8
+                refit_triggered = true
+                best_statistic = statistic
+                best_full = full
+                best_reduced = reduced
+                for attempt in attempts[2:end]
+                    retry_full = lmeeeg_lrt_fit_model(
+                        lmeeeg_lrt_full_formula(random_slope),
+                        df,
+                        attempt...,
+                    )
+                    retry_reduced = lmeeeg_lrt_fit_model(
+                        lmeeeg_lrt_reduced_formula(random_slope),
+                        df,
+                        attempt...,
+                    )
+                    retry_statistic = 2.0 * (loglikelihood(retry_full) - loglikelihood(retry_reduced))
+                    if retry_statistic > best_statistic
+                        best_statistic = retry_statistic
+                        best_full = retry_full
+                        best_reduced = retry_reduced
+                    end
+                    if retry_statistic >= -1.0e-8
+                        statistic = retry_statistic
+                        full = retry_full
+                        reduced = retry_reduced
+                        return (
+                            statistic,
+                            issingular(full),
+                            issingular(reduced),
+                            reduced,
+                            refit_triggered,
+                            unresolved_negative,
+                        )
+                    end
+                end
+                statistic = best_statistic
+                full = best_full
+                reduced = best_reduced
+                unresolved_negative = true
+            end
+            return (
+                statistic,
+                issingular(full),
+                issingular(reduced),
+                reduced,
+                refit_triggered,
+                unresolved_negative,
+            )
+        end
+
+        function lmeeeg_simulate_reduced_response(reduced_model, seed)
+            return simulate(MersenneTwister(seed), reduced_model)
         end
 
         function lmeeeg_lrt_contract()
@@ -493,8 +587,58 @@ def _fit_lrt_residual_setup(
     )
 
 
+def _fit_lrt_bootstrap_setup(eeg: np.ndarray, metadata, random_slope: bool) -> _BootstrapSetupResult:
+    jl = _load_julia_lrt()
+    cond, subject, item = _metadata_columns(metadata)
+    n_locations, n_times = eeg.shape[1], eeg.shape[2]
+    lr_map = np.empty((n_locations, n_times), dtype=float)
+    features: list[list[_BootstrapFeature]] = []
+    singular_count = 0
+    total_count = 0
+    convergence_refit_triggered = False
+    unresolved_negative = False
+    for location in range(n_locations):
+        row_features = []
+        for time_index in range(n_times):
+            (
+                statistic,
+                full_singular,
+                reduced_singular,
+                reduced_model,
+                refit_triggered,
+                unresolved,
+            ) = jl.lmeeeg_condition_lrt_bootstrap_parts(
+                eeg[:, location, time_index],
+                cond,
+                subject,
+                item,
+                random_slope,
+            )
+            statistic = float(statistic)
+            convergence_refit_triggered = convergence_refit_triggered or bool(refit_triggered)
+            unresolved_negative = unresolved_negative or bool(unresolved)
+            if statistic < -1e-8:
+                raise RuntimeError(
+                    f"Observed negative LR statistic {statistic} remained after convergence refit "
+                    f"at feature {location},{time_index}."
+                )
+            lr_map[location, time_index] = max(0.0, statistic)
+            singular_count += int(bool(full_singular)) + int(bool(reduced_singular))
+            total_count += 2
+            row_features.append(_BootstrapFeature(reduced_model=reduced_model))
+        features.append(row_features)
+    return _BootstrapSetupResult(
+        observed_statistic_map=lr_map,
+        features=features,
+        singular_count=singular_count,
+        total_count=total_count,
+        convergence_refit_triggered=convergence_refit_triggered,
+        unresolved_negative=unresolved_negative,
+    )
+
+
 def _resolve_residual_variant(permutation_method: str, random_slope: bool) -> _ResidualVariant | None:
-    if permutation_method == "design":
+    if permutation_method in {"design", "parametric_bootstrap"}:
         return None
     if permutation_method in {"reduced_residual", "conditional_same_slope"}:
         return _ResidualVariant(
@@ -521,6 +665,25 @@ def _resolve_residual_variant(permutation_method: str, random_slope: bool) -> _R
             permutation_unit="subject_signflip",
         )
     raise ValueError(f"Unknown permutation_method {permutation_method!r}.")
+
+
+def _simulate_bootstrap_eeg(
+    features: list[list[_BootstrapFeature]],
+    seed: int,
+    permutation_index: int,
+    shape: tuple[int, int, int],
+) -> np.ndarray:
+    jl = _load_julia_lrt()
+    bootstrapped = np.empty(shape, dtype=float)
+    for location, row_features in enumerate(features):
+        for time_index, feature in enumerate(row_features):
+            draw_seed = seed + 900_000 + permutation_index * 1_000
+            draw_seed += location * 100 + time_index
+            bootstrapped[:, location, time_index] = np.asarray(
+                jl.lmeeeg_simulate_reduced_response(feature.reduced_model, draw_seed),
+                dtype=float,
+            )
+    return bootstrapped
 
 
 def _permute_residual_values_within_subject(metadata, values: np.ndarray, rng: np.random.Generator) -> np.ndarray:
@@ -635,8 +798,25 @@ def _run_one_sim(
         n_subjects=n_subjects,
         n_items=n_items,
     )
+    bootstrap_features = None
     residual_variant = _resolve_residual_variant(permutation_method, random_slope)
-    if residual_variant is None:
+    if permutation_method == "parametric_bootstrap":
+        bootstrap_setup = _fit_lrt_bootstrap_setup(
+            eeg=eeg,
+            metadata=metadata,
+            random_slope=random_slope,
+        )
+        observed = _MapFitResult(
+            statistic_map=bootstrap_setup.observed_statistic_map,
+            singular_count=bootstrap_setup.singular_count,
+            total_count=bootstrap_setup.total_count,
+            convergence_refit_triggered=bootstrap_setup.convergence_refit_triggered,
+            unresolved_negative=bootstrap_setup.unresolved_negative,
+        )
+        observed_lr = bootstrap_setup.observed_statistic_map
+        residual_features = None
+        bootstrap_features = bootstrap_setup.features
+    elif residual_variant is None:
         observed = _fit_lrt_map(
             eeg=eeg,
             metadata=metadata,
@@ -668,7 +848,15 @@ def _run_one_sim(
     permuted_unresolved_negative_maps = 0
     rng = np.random.default_rng(seed + 700_000)
     for permutation_index in range(n_permutations):
-        if residual_variant is None:
+        if bootstrap_features is not None:
+            permuted_metadata = metadata
+            permuted_eeg = _simulate_bootstrap_eeg(
+                features=bootstrap_features,
+                seed=seed,
+                permutation_index=permutation_index,
+                shape=eeg.shape,
+            )
+        elif residual_variant is None:
             permuted_metadata = _permute_condition_within_subject(metadata=metadata, rng=rng)
             permuted_eeg = eeg
         else:
